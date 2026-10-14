@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { BaileysEventMap, WAMessage } from '@whiskeysockets/baileys';
 import { JsonlStore } from '../store/index.js';
+import { SendError, SendService, validateSendOptions } from '../send/index.js';
+import { handleSendRequest } from '../send/http.js';
 import type { MessageRecord } from '../store/index.js';
 import { NameCache } from './cache.js';
 import { privateDirectory, removeFile } from './files.js';
@@ -21,7 +23,7 @@ export interface DaemonOptions {
   directory?: string;
   host?: string;
   port?: number;
-  /** These side effects are unavailable under the session's read-only policy. */
+  /** Explicit opt-ins; both default OFF and only apply during explicit sends. */
   read_receipts?: boolean;
   presence?: boolean;
   backoffBaseMs?: number;
@@ -49,10 +51,7 @@ function validateOptions(options: DaemonOptions): void {
   }
   const port = options.port ?? 7877;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid control port.');
-  if (options.read_receipts !== undefined && options.read_receipts !== false
-    || options.presence !== undefined && options.presence !== false) {
-    throw new Error('Read receipts and presence are disabled by the read-only policy.');
-  }
+  validateSendOptions(options);
   const base = options.backoffBaseMs ?? 1000;
   const max = options.backoffMaxMs ?? 60000;
   if (!Number.isSafeInteger(base) || base < 1 || !Number.isSafeInteger(max)
@@ -69,6 +68,7 @@ export class DaemonService {
   private readonly pairing: PairingOutput;
   private readonly store: { append(record: MessageRecord): unknown };
   private readonly logger: NonNullable<DaemonDependencies['log']>;
+  private readonly sender: SendService;
   private server: Server | undefined;
   private socket: ListenerSocket | undefined;
   private removeListeners: (() => void)[] = [];
@@ -86,6 +86,8 @@ export class DaemonService {
     validateOptions(options);
     this.options = { ...options };
     this.directory = resolve(options.directory ?? join(homedir(), '.wallfly'));
+    this.sender = new SendService({ ...options, directory: this.directory },
+      () => this.running && this.state === 'connected' ? this.socket?.outgoing : undefined);
     this.authDirectory = join(this.directory, 'auth');
     privateDirectory(this.directory);
     privateDirectory(this.authDirectory);
@@ -116,11 +118,23 @@ export class DaemonService {
     const server = createServer((request, response) => {
       response.setHeader('Content-Type', 'application/json');
       response.setHeader('Cache-Control', 'no-store');
+      if (request.headers.origin !== undefined || (request.headers.host !== `127.0.0.1:${this.status().port}`)) {
+        response.statusCode = 403;
+        response.end(JSON.stringify({ error: 'Use the local control endpoint without an Origin header.' }));
+        request.resume();
+        return;
+      }
       if (request.method === 'GET' && request.url === '/status') {
         response.end(JSON.stringify(this.status()));
       } else if (request.method === 'POST' && request.url === '/stop') {
         response.once('finish', () => { void this.stop().catch(() => this.log('stop.failed')); });
         response.end(JSON.stringify({ stopping: true }));
+      } else if (request.method === 'POST' && request.url === '/send') {
+        void handleSendRequest(request, response, (value) => {
+          if (!this.running) throw new SendError(503, 'WhatsApp is disconnected.');
+          return this.sender.send(value);
+        });
+        return;
       } else {
         response.statusCode = 404;
         response.end(JSON.stringify({ error: 'Not found' }));
@@ -165,6 +179,7 @@ export class DaemonService {
       await Promise.all([
         this.pendingConnection,
         this.events,
+        this.sender.flush(),
         new Promise<void>((accept) => {
           if (!server?.listening) { accept(); return; }
           server.close(() => accept());

@@ -19,10 +19,10 @@ Authentication and message/name data stay on the local filesystem. Do not run
 multiple listeners against the same directory.
 
 The service uses the exact Baileys version `6.7.23` and sets
-`markOnlineOnConnect: false`. It does not call outgoing message, chat-read, or
-presence APIs. Incoming messages do not trigger application actions beyond
-local persistence. The send module remains a placeholder; receipts and presence
-cannot be enabled in this implementation.
+`markOnlineOnConnect: false`. The daemon does not call outgoing message,
+chat-read, or presence APIs itself. All application outgoing operations live in `src/send/`
+and require an explicit `POST /send` action. Incoming messages only update
+local persistence. Receipt and presence gates default OFF; see [SEND.md](SEND.md).
 
 ## Control endpoint
 
@@ -32,11 +32,14 @@ including hostnames and IPv6 loopback, are rejected. Only these routes exist:
 | Method | Route | Response |
 | --- | --- | --- |
 | GET | `/status` | JSON with `state`, `connected`, `reconnectAttempt`, `recordedMessages`, and `port`. |
+| POST | `/send` | Validated, audited text/image/document send; see [SEND.md](SEND.md). |
 | POST | `/stop` | `{ "stopping": true }`; then drain queued events, close the socket and HTTP server. |
 
-Unknown paths or methods return `404`, including `POST /send`. `/status` never
+Unknown paths or methods return `404`. `/status` never
 returns credentials, account identifiers, message text, or QR contents. The API
-has no authentication and is accessible to other local processes. There is no
+has no authentication and is accessible to other local processes. Requests
+must use the bound `127.0.0.1:PORT` Host header and omit Origin; this rejects
+browser-origin requests and hostnames used for DNS rebinding. There is no
 remote bind opt-in.
 
 ```sh
@@ -82,7 +85,8 @@ return an error to the caller.
 Event handler, credential-save, QR-rendering, and append failures are logged
 and contained; later events continue. Failed appends are not retried and may
 leave a gap in the archive. Stopping cancels reconnect timers, discards stale
-socket events, and drains already queued events before closing.
+socket events, and drains already queued events and in-flight sends before closing.
+Queued sends that have not begun transmission reject once stopping begins.
 
 ## Programmatic interface
 
@@ -90,7 +94,10 @@ Import `DaemonService` from `dist/src/daemon/index.js` after compilation.
 `start()`, `stop()`, and `flush()` return promises; `status()` returns a snapshot.
 Options include `directory`, `port` (zero selects a free port),
 `backoffBaseMs`, and `backoffMaxMs`. `host` accepts only `127.0.0.1`.
-`read_receipts` and `presence` accept only `false` or omission; enabling either
-throws. Transport, pairing output, store, and logger dependencies can be
-injected for offline embedding and tests. The socket interface exposes only
-events, account identity, credential persistence, and connection close.
+`read_receipts` and `presence` accept booleans, default OFF, and apply only
+inside explicit sends. The npm entry point reads these flags from
+`~/.wallfly/config.json` at startup; invalid configuration fails startup.
+Transport, pairing output, store, and logger dependencies can be injected for
+offline embedding and tests. The socket interface exposes events, account
+identity, credential persistence,
+connection close, and an opaque outgoing port consumed only by `src/send/`.

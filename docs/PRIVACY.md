@@ -1,7 +1,7 @@
 # Privacy
 
 wallfly is a self-hosted, privacy-first WhatsApp client for the operator's own
-account with a planned explicit, audited send surface. The listener connects,
+account with an explicit, audited send surface. The listener connects,
 pairs, and stores locally. See [DAEMON.md](DAEMON.md) for implemented behavior.
 
 ## What wallfly stores
@@ -23,11 +23,15 @@ disconnection, or stop. Do not share QR output or save terminal logs.
 
 ## Send audit log
 
-Every planned send must be appended to the separate local audit log at
+Every accepted send is appended to the separate local audit log at
 `~/.wallfly/sends.jsonl` before it executes or leaves the machine. A failed audit
-append must prevent the send. Per [AGENT_PROMPT.md](../AGENT_PROMPT.md), each audit
-record contains `ts`, `jid`, text SHA-256, and `kind`. The final field names and
-schema will be documented with sending. The planned `wallfly sends` command
+append must prevent the send. Each v1 record contains `v`, Unix-millisecond
+`ts`, `jid`, `kind`, `textSha256` (SHA-256 of the UTF-8 text or media caption,
+hashing empty text when absent), and `mediaPath` (absolute local path or null). Raw text, captions,
+and attachment bytes are not written to this log. It uses mode `0600` in a
+`0700` directory and is append-only with no automatic rotation. Records
+represent attempts, including failures after audit; they do not prove delivery.
+See [SEND.md](SEND.md) for the full contract. The planned `wallfly sends` command
 shows this log.
 
 Hashing the text does not make the audit anonymous: destinations and hashes are
@@ -44,14 +48,15 @@ protect the host and any backups.
 ## What leaves through explicit actions
 
 The linked-device transport necessarily connects to WhatsApp and exchanges
-authentication and protocol traffic. Planned explicit sends will also transmit
+authentication and protocol traffic. Explicit sends transmit
 the chosen text, images, or documents through WhatsApp to the chosen recipient. These actions must
 enter through `wallfly send` or the local `POST /send` API, run only in `src/send/`,
 and append the audit before transmission. No automatic or scheduled sends or
 reactions to incoming messages are allowed.
 
 The implemented control listener accepts only `127.0.0.1` and exposes
-status/stop. No remote bind or send endpoint is available. Local processes
+status/stop/send. No remote bind is available. Requests with an Origin header
+or a Host other than the bound loopback address are rejected. Local processes
 can access the control endpoint without authentication.
 
 ## Read receipts and presence: config-gated, default OFF
@@ -67,9 +72,13 @@ wallfly config set presence true
 The first permits marking the operator's chats read; the second permits
 broadcasting presence. Enabling either allows the corresponding status information
 to leave via WhatsApp. Both gates belong in `src/send/` and default OFF.
-Configuration and these commands are planned, not implemented yet.
-The current listener rejects either flag when enabled and uses
-`markOnlineOnConnect: false`. It never calls message, read, or presence APIs.
+The CLI commands remain planned; the npm daemon currently reads boolean
+`read_receipts` and `presence` flags from `~/.wallfly/config.json` on startup.
+Missing flags default OFF. An enabled presence gate permits an available update
+during an explicit send. An enabled receipt gate permits marking only the
+explicit `readKeys` in that send request read; it never automatically marks
+incoming messages read. Both side effects follow the send audit append.
+The daemon uses `markOnlineOnConnect: false`.
 Baileys still exchanges the protocol traffic required for a linked device.
 The application logs lifecycle/error categories, without messages or credentials.
 

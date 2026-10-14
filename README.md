@@ -2,19 +2,19 @@
 
 [![CI](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml)
 
-> Your self-hosted WhatsApp client, with local storage and planned audited sends.
+> Your self-hosted WhatsApp client, with local storage and audited sends.
 
 wallfly is a self-hosted, privacy-first WhatsApp **client**: a linked-device
 daemon (via [Baileys](https://github.com/WhiskeySockets/Baileys)) that records
 the operator's own chats to a local store, exposes them through a documented
-CLI, and plans to **send** messages through an explicit, audited send surface.
+CLI, and can **send** messages through an explicit, audited send surface.
 
-**The current implementation is a listener. Sending and configuration opt-ins
-are not implemented.**
+**The daemon, store, and audited HTTP send surface are implemented. The CLI
+remains a separate task.**
 
-All planned outgoing behavior belongs in `src/send/`, through an explicit
+All outgoing behavior belongs in `src/send/`, through an explicit
 operator or documented script action via `wallfly send` or local `POST /send`.
-The planned audit record must be appended before the send executes; a failed
+The audit record is appended before the send executes; a failed
 append must prevent the send. There are no automatic, scheduled, or
 incoming-message-triggered sends.
 
@@ -23,8 +23,8 @@ incoming-message-triggered sends.
 🚧 Under active construction — see the issue tracker.
 
 The JSONL store and Baileys listener are implemented with offline tests and CI.
-The send surface and CLI remain planned. Baileys is pinned to `6.7.23`; the
-store has zero runtime dependencies.
+The send surface is implemented; the CLI remains planned. Baileys is pinned
+to `6.7.23`; the store has zero runtime dependencies.
 
 ## Quickstart
 
@@ -34,10 +34,12 @@ npm run daemon
 ```
 
 Scan the printed QR with WhatsApp **Settings > Linked devices**. The daemon
-also prints a private PNG path. Control it locally with `GET /status` and
-`POST /stop` at `http://127.0.0.1:7877`; Ctrl-C also stops it. See
+also prints a private PNG path. Control it locally with `GET /status`,
+`POST /stop`, and `POST /send` at `http://127.0.0.1:7877`; Ctrl-C also stops it. See
 [the daemon guide](docs/DAEMON.md) for pairing, persistence, and reconnect.
-The `wallfly` CLI and sending commands are not available yet.
+See [the send guide](docs/SEND.md) for text/image/document requests, audit
+records, and receipt/presence opt-ins. The `wallfly` CLI commands are not
+available yet.
 
 ## Data format
 

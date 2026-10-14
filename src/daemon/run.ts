@@ -1,6 +1,7 @@
 import { DaemonService } from './index.js';
+import { loadSendConfig } from '../send/config.js';
 
-const service = new DaemonService();
+const service = new DaemonService(loadSendConfig());
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => { void service.stop().catch(() => { process.exitCode = 1; }); });
 }

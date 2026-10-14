@@ -1,14 +1,14 @@
 # Architecture
 
 wallfly currently implements a linked-device listener, local process control,
-contact/group name cache, and a versioned JSONL store. The CLI and explicit
-send surface remain planned module boundaries.
+contact/group name cache, a versioned JSONL store, and an explicit audited
+send surface. The CLI remains a planned module boundary.
 
 | Boundary | Responsibility |
 | --- | --- |
-| `src/daemon/` | Baileys socket adapter, event mapping, reconnect, pairing QR output, persisted name cache, and loopback HTTP status/stop. |
+| `src/daemon/` | Baileys socket adapter, event mapping, reconnect, pairing QR output, persisted name cache, and loopback HTTP status/stop/send routing. |
 | `src/store/` | Append-only JSONL writer/reader, filters, tail, cursors, and size rotation. |
-| `src/send/` | Placeholder for the planned explicit, audited outgoing surface. |
+| `src/send/` | Single `SendService.send(request)` path, text/image/document sends, audit writer, and config gates. |
 | `src/cli/` | Placeholder for plain argument parsing and lifecycle/query/export commands. |
 | `test/` | Offline `node:test` coverage using injected transport mocks. |
 
@@ -26,8 +26,13 @@ WhatsApp linked-device events
        local queries
 ```
 
-The daemon uses a narrow `ListenerSocket` interface with no outgoing message,
-chat-read, or presence APIs. Baileys is imported lazily by the production socket
+The daemon uses a narrow `ListenerSocket` interface with an opaque outgoing
+port. Only `src/send/` accesses Baileys message/read/presence APIs; HTTP delegates
+to `SendService.send(request)`, which is also the integration point for the
+future CLI. Requests validate first, append and fsync `sends.jsonl`, then
+execute. Audit failure prevents all outgoing operations; transmission failures
+retain the audit and never retry automatically. Incoming events never invoke
+the outgoing surface, even with config gates enabled. Baileys is imported lazily by the production socket
 factory. Tests inject mocks and never instantiate the production transport.
 Incoming event handlers run serially to preserve name updates before message
 appends. Each handler catches failures, and individual message append failures
@@ -46,10 +51,14 @@ is `0600`, directory mode is `0700`. The auth directory is `~/.wallfly/auth/`;
 name cache updates atomically replace `~/.wallfly/contacts.json`.
 
 The control listener binds exclusively to `127.0.0.1` (default port `7877`),
-with `GET /status` and `POST /stop`. Other paths/methods return `404`.
-`markOnlineOnConnect` is false; receipts and presence options cannot be enabled
-in the current implementation. No outgoing module behavior has been added.
+with `GET /status`, `POST /stop`, and `POST /send`. Other paths/methods return
+`404`. Host and Origin checks restrict browser access. `markOnlineOnConnect`
+is false. Receipt and presence gates default OFF and apply only during
+explicit sends; persisted config is loaded at startup. Sends are serialized,
+resolve a connected transport when execution starts, and cannot migrate to a
+replacement socket during an operation. Stop drains in-flight sends and rejects
+queued sends before transmission.
 
 See [DAEMON.md](DAEMON.md) for lifecycle, pairing, failure handling, and API
-contracts, and [PRIVACY.md](PRIVACY.md) for data handling. Sending/audit/config
-behavior described in the project roadmap is not implemented yet.
+contracts, [SEND.md](SEND.md) for outgoing requests/auditing/config, and
+[PRIVACY.md](PRIVACY.md) for data handling. CLI commands remain planned.

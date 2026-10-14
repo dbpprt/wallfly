@@ -13,6 +13,7 @@ import type { DaemonDependencies, DaemonOptions, ListenerSocket, SocketOptions }
 import type { ListenerEvent } from '../src/daemon/socket.js';
 import { printPairingQr } from '../src/daemon/pair.js';
 import { JsonlStore } from '../src/store/index.js';
+import { SendService } from '../src/send/index.js';
 
 // All identifiers, text, display names, and pairing input are synthetic markers.
 class FakeSocket implements ListenerSocket {
@@ -20,7 +21,12 @@ class FakeSocket implements ListenerSocket {
   user = { id: 'test-self:2@invalid' };
   closed = 0;
   saved = 0;
-  outgoing = 0;
+  readonly outgoingCalls: string[] = [];
+  readonly outgoing = {
+    message: async (): Promise<string> => { this.outgoingCalls.push('message'); return 'synthetic-sent-id'; },
+    receipts: async (): Promise<void> => { this.outgoingCalls.push('receipts'); },
+    presence: async (): Promise<void> => { this.outgoingCalls.push('presence'); },
+  };
   readonly ev = {
     on: <K extends ListenerEvent>(event: K, callback: (data: BaileysEventMap[K]) => void): void => {
       this.emitter.on(event, callback);
@@ -31,9 +37,6 @@ class FakeSocket implements ListenerSocket {
   };
   async saveCredentials(): Promise<void> { this.saved++; }
   end(): void { this.closed++; }
-  sendMessage(): never { this.outgoing++; throw new Error('Forbidden outgoing action'); }
-  readMessages(): never { this.outgoing++; throw new Error('Forbidden read action'); }
-  sendPresenceUpdate(): never { this.outgoing++; throw new Error('Forbidden presence action'); }
   emit<K extends ListenerEvent>(event: K, value: BaileysEventMap[K]): void {
     this.emitter.emit(event, value);
   }
@@ -73,9 +76,10 @@ async function eventually(predicate: () => boolean): Promise<void> {
   assert.fail('Condition did not become true');
 }
 
-function control(port: number, method: string, path: string): Promise<{ status: number; body: unknown }> {
+function control(port: number, method: string, path: string, body?: string,
+  headers: Record<string, string> = {}): Promise<{ status: number; body: unknown }> {
   return new Promise((accept, reject) => {
-    const req = request({ hostname: '127.0.0.1', port, method, path, agent: false }, (res) => {
+    const req = request({ hostname: '127.0.0.1', port, method, path, agent: false, headers }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (part: string) => { body += part; });
@@ -83,7 +87,7 @@ function control(port: number, method: string, path: string): Promise<{ status: 
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.end();
+    req.end(body);
   });
 }
 
@@ -200,15 +204,15 @@ test('daemon persists event and history mapping, contact/group updates, and cred
   assert.equal(service.cache.get('test-history-group@g.us'), 'synthetic-history-group');
   assert.equal(service.status().recordedMessages, 3);
   assert.equal(socket.saved, 1);
-  assert.equal(socket.outgoing, 0);
+  assert.deepEqual(socket.outgoingCalls, []);
 });
 
-test('control endpoint only exposes loopback status and stop; outgoing and unknown routes reject', async (t) => {
+test('control endpoint only exposes loopback status, stop, and send; unknown routes reject', async (t) => {
   const { service, socket } = setup(t);
   await service.start();
   const port = service.status().port!;
   assert.equal((await control(port, 'GET', '/status')).status, 200);
-  for (const [method, path] of [['POST', '/send'], ['GET', '/stop'], ['POST', '/status'],
+  for (const [method, path] of [['GET', '/send'], ['GET', '/stop'], ['POST', '/status'],
     ['GET', '/'], ['GET', '/status?extra=true']]) {
     assert.equal((await control(port, method!, path!)).status, 404);
   }
@@ -223,13 +227,13 @@ test('control endpoint only exposes loopback status and stop; outgoing and unkno
   assert.equal(socket.emitter.eventNames().length, 0);
 });
 
-test('rejects every non-127.0.0.1 bind and prohibited side effects before creating files', (t) => {
+test('rejects every non-127.0.0.1 bind and invalid options before creating files', (t) => {
   const root = join(directory(t), 'uncreated');
   for (const host of ['0.0.0.0', '::', '::1', 'localhost', '127.0.0.2', 'test-host.invalid']) {
     assert.throws(() => new DaemonService({ directory: root, host }), /127\.0\.0\.1/);
   }
-  assert.throws(() => new DaemonService({ directory: root, read_receipts: true }), /read-only/);
-  assert.throws(() => new DaemonService({ directory: root, presence: true }), /read-only/);
+  assert.throws(() => new DaemonService({ directory: root, read_receipts: 'true' as unknown as boolean }), /boolean/);
+  assert.throws(() => new DaemonService({ directory: root, presence: 1 as unknown as boolean }), /boolean/);
   for (const options of [{ port: -1 }, { port: 65536 }, { port: 1.5 },
     { backoffBaseMs: 0 }, { backoffMaxMs: 2147483648 }, { backoffBaseMs: 20, backoffMaxMs: 10 }]) {
     assert.throws(() => new DaemonService({ directory: root, ...options }), RangeError);
@@ -358,4 +362,74 @@ test('control bind failure does not create a socket or leave the daemon running'
   await assert.rejects(second.service.start(), { code: 'EADDRINUSE' });
   assert.equal(second.calls.length, 0);
   assert.equal(second.service.status().state, 'stopped');
+});
+
+test('POST /send validates JSON, audits, sends only while connected, and defaults side effects OFF', async (t) => {
+  const { service, socket, root } = setup(t);
+  await service.start();
+  const port = service.status().port!;
+  const headers = { 'content-type': 'application/json' };
+  const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-send-text' });
+  assert.equal((await control(port, 'POST', '/send', body, headers)).status, 503);
+  assert.equal(existsSync(join(root, 'sends.jsonl')), false);
+  socket.emit('connection.update', { connection: 'open' });
+  await service.flush();
+  assert.deepEqual(await control(port, 'POST', '/send', body, headers), {
+    status: 200, body: { messageId: 'synthetic-sent-id' },
+  });
+  assert.deepEqual(socket.outgoingCalls, ['message']);
+  assert.equal(JSON.parse(readFileSync(join(root, 'sends.jsonl'), 'utf8')).kind, 'text');
+  assert.equal((await control(port, 'POST', '/send', '{', headers)).status, 400);
+  assert.equal((await control(port, 'POST', '/send', '{}', headers)).status, 400);
+  assert.equal((await control(port, 'POST', '/send', body)).status, 415);
+  assert.equal((await control(port, 'POST', '/send', body, { ...headers, origin: 'https://synthetic.invalid' })).status, 403);
+  assert.equal((await control(port, 'POST', '/send', body, { ...headers, host: 'synthetic.invalid' })).status, 403);
+  assert.equal((await control(port, 'POST', '/send', JSON.stringify({ text: 'x'.repeat(1024 * 1024) }), headers)).status, 413);
+  assert.deepEqual(socket.outgoingCalls, ['message']);
+  socket.emit('connection.update', { connection: 'close' });
+  await service.flush();
+  assert.equal((await control(port, 'POST', '/send', body, headers)).status, 503);
+});
+
+test('enabled config gates cause no automatic effects; POST /send explicitly triggers them', async (t) => {
+  const { service, socket } = setup(t, { read_receipts: true, presence: true });
+  await service.start();
+  socket.emit('connection.update', { connection: 'open' });
+  socket.emit('messages.upsert', { type: 'notify', messages: [message()] });
+  await service.flush();
+  assert.deepEqual(socket.outgoingCalls, []);
+  const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-text',
+    readKeys: [{ remoteJid: 'synthetic-chat@s.whatsapp.net', id: 'synthetic-read-id' }] });
+  assert.equal((await control(service.status().port!, 'POST', '/send', body, { 'content-type': 'application/json' })).status, 200);
+  assert.deepEqual(socket.outgoingCalls, ['presence', 'receipts', 'message']);
+});
+
+test('stop drains an in-flight send before closing its socket and rejects queued sends', async (t) => {
+  const send = t.mock.method(SendService.prototype, 'send');
+  const { service, socket, root } = setup(t);
+  let release!: () => void;
+  socket.outgoing.message = async () => {
+    socket.outgoingCalls.push('message');
+    await new Promise<void>((accept) => { release = accept; });
+    return 'synthetic-sent-id';
+  };
+  await service.start();
+  socket.emit('connection.update', { connection: 'open' });
+  await service.flush();
+  const port = service.status().port!;
+  const headers = { 'content-type': 'application/json' };
+  const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-text' });
+  const first = control(port, 'POST', '/send', body, headers);
+  await eventually(() => release !== undefined);
+  const second = control(port, 'POST', '/send', body, headers);
+  await eventually(() => send.mock.callCount() === 2);
+  const stopping = service.stop();
+  assert.equal(socket.closed, 0);
+  release();
+  assert.equal((await first).status, 200);
+  assert.equal((await second).status, 503);
+  await stopping;
+  assert.deepEqual(socket.outgoingCalls, ['message']);
+  assert.equal(socket.closed, 1);
+  assert.equal(readFileSync(join(root, 'sends.jsonl'), 'utf8').trim().split('\n').length, 1);
 });

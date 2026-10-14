@@ -1,16 +1,19 @@
 import type { BaileysEventMap } from '@whiskeysockets/baileys';
 import { privateDirectory, secureAuthFiles } from './files.js';
+import { bindSendTransport } from '../send/index.js';
+import type { SendTransport } from '../send/index.js';
 
 export type ListenerEvent = 'connection.update' | 'creds.update' | 'messages.upsert'
   | 'contacts.upsert' | 'contacts.update' | 'groups.upsert' | 'groups.update' | 'messaging-history.set';
 
-/** Deliberately narrow transport port: no outgoing message or chat mutation APIs. */
+/** Event transport plus an opaque outgoing port, invoked only by src/send. */
 export interface ListenerSocket {
   ev: {
     on<K extends ListenerEvent>(event: K, callback: (data: BaileysEventMap[K]) => void): void;
     off<K extends ListenerEvent>(event: K, callback: (data: BaileysEventMap[K]) => void): void;
   };
   readonly user: { id: string } | undefined;
+  readonly outgoing: SendTransport;
   saveCredentials(): Promise<void>;
   end(error: Error | undefined): void;
 }
@@ -42,6 +45,7 @@ export const createBaileysSocket: SocketFactory = async (options) => {
     generateHighQualityLinkPreview: false });
   return {
     ev: socket.ev,
+    outgoing: bindSendTransport(socket),
     get user() { return socket.user; },
     saveCredentials: async () => {
       await saveCreds();
