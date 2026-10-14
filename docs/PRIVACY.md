@@ -13,15 +13,21 @@ in a local append-only JSONL store at `~/.wallfly/messages.jsonl`. Each record
 has a `v` schema version. The store file uses mode `0600`; its directory uses
 `0700`. The exact schema will be documented with the store implementation.
 
-Every explicit send is appended to `~/.wallfly/sends.jsonl` before leaving the
-machine. The audit records the timestamp (`ts`), destination (`jid`), text SHA-256
-hash, and send `kind`. A failed audit append must prevent delivery. Hashing the
-text does not make the audit anonymous: destinations and hashes are sensitive
-metadata. The final audit schema will be documented with sending.
-
 Linked-device authentication/session material must also stay local and private.
 Its final location will be documented when pairing is implemented. Treat it as
 a credential. Pairing QR output and local exports are sensitive too.
+
+## Send audit log
+
+Every send is appended to the separate local audit log at
+`~/.wallfly/sends.jsonl` before it executes or leaves the machine. A failed audit
+append must prevent the send. Per [AGENT_PROMPT.md](../AGENT_PROMPT.md), each audit
+record contains `ts`, `jid`, text SHA-256, and `kind`. The final field names and
+schema will be documented with sending. The planned `wallfly sends` command
+shows this log.
+
+Hashing the text does not make the audit anonymous: destinations and hashes are
+sensitive metadata. Keep the audit local and protect it alongside the archive.
 
 ## What never leaves the machine
 
@@ -40,12 +46,23 @@ enter through `wallfly send` or the local `POST /send` API, run only in `src/sen
 and append the audit before transmission. No automatic or scheduled sends or
 reactions to incoming messages are allowed.
 
-Read receipts and presence default OFF. Enabling them explicitly with
-`wallfly config set read_receipts true` or `wallfly config set presence true`
-allows the corresponding read-status or presence information to leave via
-WhatsApp. Configuration and these commands are planned, not implemented yet.
 Any local listener binds to `127.0.0.1` by default; non-loopback access must be
 an explicit, documented opt-in.
+
+## Read receipts and presence: config-gated, default OFF
+
+Read receipts and presence require explicit configuration to enable. The planned
+opt-in commands are:
+
+```sh
+wallfly config set read_receipts true
+wallfly config set presence true
+```
+
+The first permits marking the operator's chats read; the second permits
+broadcasting presence. Enabling either allows the corresponding status information
+to leave via WhatsApp. Both gates belong in `src/send/` and default OFF.
+Configuration and these commands are planned, not implemented yet.
 
 ## Unlink and remove local data
 

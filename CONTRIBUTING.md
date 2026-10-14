@@ -24,30 +24,33 @@ justification. Keep `main` green.
 
 ## Prime directives
 
-From [AGENT_PROMPT.md](AGENT_PROMPT.md):
+The authoritative rules are in [AGENT_PROMPT.md](AGENT_PROMPT.md), quoted here:
 
-> **Send only through the explicit send surface.** All outgoing traffic lives
-> in `src/send/` and is reachable ONLY via the `wallfly send` CLI command and
-> the `POST /send` local API endpoint. No auto-sends, no scheduled sends, no
-> autonomous behavior, no reactions to incoming messages. Every send is
-> appended to `~/.wallfly/sends.jsonl` (audit log) before it leaves.
->
-> **Read receipts and presence are config-gated, default OFF.** Marking the
-> user's chats read or broadcasting presence silently is a side effect users
-> didn't ask for. `wallfly config set read_receipts true` / `presence true`
-> to enable; document it.
+> 1. **Send only through the explicit send surface.** All outgoing traffic lives
+>    in `src/send/` and is reachable ONLY via the `wallfly send` CLI command and
+>    the `POST /send` local API endpoint. No auto-sends, no scheduled sends, no
+>    autonomous behavior, no reactions to incoming messages. Every send is
+>    appended to `~/.wallfly/sends.jsonl` (audit log) before it leaves.
+> 2. **Read receipts and presence are config-gated, default OFF.** Marking the
+>    user's chats read or broadcasting presence silently is a side effect users
+>    didn't ask for. `wallfly config set read_receipts true` / `presence true`
+>    to enable; document it.
+> 3. **Secrets never enter the repo.** No tokens, phone numbers, session data,
+>    or chat content in tests, fixtures, docs, or CI. CI must run a secret scan
+>    (gitleaks) on every PR and block on findings.
+> 4. **Local-only by default.** The daemon listens on 127.0.0.1 only. Any
+>    non-loopback bind must be an explicit, documented opt-in.
+> 5. **The message store is append-only JSONL** (`~/.wallfly/messages.jsonl`,
+>    mode 0600, dir 0700). Schema is versioned; every record carries a `v` field.
+>    Sends get their own audit log (`sends.jsonl`: ts, jid, text sha256, kind).
 
 Only `src/send/` may import the Baileys send API when transport is introduced.
 The send audit records `ts`, `jid`, the text SHA-256 hash, and `kind`. If the
 audit append fails, the send must not leave the machine. Test this ordering
 offline when sending is implemented.
 
-Never commit tokens, phone numbers, session data, or chat content, including
-in fixtures and examples. Gitleaks runs on every PR and fails on findings.
-Bind the daemon to `127.0.0.1` by default; any non-loopback bind requires an
-explicit, documented opt-in. Keep the message store append-only at
-`~/.wallfly/messages.jsonl`, with file mode `0600`, directory mode `0700`, and
-a `v` schema version on every record. Sends use the separate audit log.
+Document the full configuration opt-ins as `wallfly config set read_receipts true`
+and `wallfly config set presence true` when those commands are implemented.
 
 ## PR checklist
 

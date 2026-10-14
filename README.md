@@ -2,18 +2,20 @@
 
 [![CI](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml)
 
-> A fly on the wall for your WhatsApp.
+> Your self-hosted WhatsApp client, with explicit, audited sends.
 
-wallfly is a self-hosted, privacy-first WhatsApp **client** for your own account.
-It connects as a linked device (via [Baileys](https://github.com/WhiskeySockets/Baileys)),
-records your chats locally, and exposes them through a documented CLI. It provides
-an explicit send surface, audited before outgoing content leaves the machine.
+wallfly is a self-hosted, privacy-first WhatsApp **client**: a linked-device
+daemon (via [Baileys](https://github.com/WhiskeySockets/Baileys)) that records
+the operator's own chats to a local store, exposes them through a documented
+CLI, and can **send** messages through an explicit, audited send surface.
 
 **Every send is logged to `~/.wallfly/sends.jsonl`; read receipts and presence
 default OFF (config-gated).**
 
-Sending is an explicit operator or documented script action through `wallfly send`
-or the local `POST /send` API. There are no automatic or scheduled sends.
+All outgoing behavior belongs in `src/send/`. Sending is an explicit operator
+or documented script action through `wallfly send` or the local `POST /send` API.
+The audit record is appended before the send executes; a failed append prevents
+the send. There are no automatic, scheduled, or incoming-message-triggered sends.
 
 ## Status
 
