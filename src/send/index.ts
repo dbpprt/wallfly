@@ -74,7 +74,7 @@ function jid(value: unknown): value is string {
     && /^[^@\s:]+@(?:s\.whatsapp\.net|g\.us|lid)$/.test(value);
 }
 
-function validateRequest(value: unknown): SendRequest {
+export function validateRequest(value: unknown): SendRequest {
   const fail = (): never => { throw new SendError(400, 'Invalid send request.'); };
   if (!object(value) || !jid(value.jid)
     || Object.keys(value).some((key) => !['jid', 'text', 'image', 'document', 'caption', 'readKeys'].includes(key))) return fail();
@@ -146,6 +146,10 @@ export class SendService {
   }
 
   send(value: unknown): Promise<{ messageId: string | null }> {
+    return this.sendWithAudit(value).then(({ messageId }) => ({ messageId }));
+  }
+
+  sendWithAudit(value: unknown): Promise<{ messageId: string | null; audit: SendAuditRecord }> {
     let request: SendRequest;
     try { request = validateRequest(value); } catch (error) { return Promise.reject(error); }
     const result = this.pending.then(() => this.execute(request));
@@ -155,7 +159,7 @@ export class SendService {
 
   async flush(): Promise<void> { await this.pending; }
 
-  private async execute(request: SendRequest): Promise<{ messageId: string | null }> {
+  private async execute(request: SendRequest): Promise<{ messageId: string | null; audit: SendAuditRecord }> {
     const transport = this.connectedTransport();
     if (!transport) throw new SendError(503, 'WhatsApp is disconnected.');
     if (request.readKeys?.length && !this.options.read_receipts) {
@@ -174,10 +178,11 @@ export class SendService {
           : { document: bytes, caption: text, fileName: basename(absolutePath!), mimetype: 'application/octet-stream' };
       }
     } catch { throw new SendError(400, 'Media must be a readable local regular file, 1 byte to 64 MiB.'); }
+    const audit: SendAuditRecord = { v: 1, ts: Date.now(), jid: request.jid, kind,
+      textSha256: createHash('sha256').update(text).digest('hex'), mediaPath: absolutePath };
     try {
       privateDirectory(this.directory);
-      appendAudit(this.auditPath, { v: 1, ts: Date.now(), jid: request.jid, kind,
-        textSha256: createHash('sha256').update(text).digest('hex'), mediaPath: absolutePath });
+      appendAudit(this.auditPath, audit);
     } catch { throw new SendError(500, 'Audit append failed; send prevented.'); }
     // A disconnect/stop during side effects must never switch this request to another socket.
     const active = (): void => {
@@ -189,7 +194,7 @@ export class SendService {
       if (this.options.read_receipts && request.readKeys?.length) {
         await transport.receipts(request.readKeys); active();
       }
-      return { messageId: await transport.message(request.jid, content) };
+      return { messageId: await transport.message(request.jid, content), audit };
     } catch (error) {
       if (error instanceof SendError) throw error;
       throw new SendError(502, 'Outgoing operation failed; delivery may be uncertain. Check before retrying.');

@@ -23,6 +23,8 @@ export interface DaemonOptions {
   directory?: string;
   host?: string;
   port?: number;
+  maxBytes?: number;
+  keepRotations?: number;
   /** Explicit opt-ins; both default OFF and only apply during explicit sends. */
   read_receipts?: boolean;
   presence?: boolean;
@@ -92,7 +94,7 @@ export class DaemonService {
     privateDirectory(this.directory);
     privateDirectory(this.authDirectory);
     this.cache = new NameCache(this.directory);
-    this.store = dependencies.store ?? new JsonlStore({ directory: this.directory });
+    this.store = dependencies.store ?? new JsonlStore({ ...options, directory: this.directory });
     this.factory = dependencies.socketFactory ?? createBaileysSocket;
     this.pairing = dependencies.pairingOutput ?? printPairingQr;
     this.logger = dependencies.log ?? ((event, details) => {
@@ -132,7 +134,7 @@ export class DaemonService {
       } else if (request.method === 'POST' && request.url === '/send') {
         void handleSendRequest(request, response, (value) => {
           if (!this.running) throw new SendError(503, 'WhatsApp is disconnected.');
-          return this.sender.send(value);
+          return this.sender.sendWithAudit(value);
         });
         return;
       } else {

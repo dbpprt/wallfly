@@ -130,10 +130,15 @@ export class JsonlStore {
       let size = fstatSync(fd).size;
       let prefix = this.needsNewline(fd, size) ? '\n' : '';
       if (size > 0 && size + line.length + prefix.length > this.maxBytes) {
-        closeSync(fd);
+        // Keep the old inode alive until its replacement exists. With zero
+        // retention, immediate inode reuse can alias a just-expired cursor on
+        // filesystems whose birth timestamps have coarse resolution.
+        const previous = fd;
         fd = -1;
-        this.rotate();
-        fd = this.openWriter();
+        try {
+          this.rotate();
+          fd = this.openWriter();
+        } finally { closeSync(previous); }
         size = 0;
         prefix = '';
       }

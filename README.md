@@ -9,8 +9,7 @@ daemon (via [Baileys](https://github.com/WhiskeySockets/Baileys)) that records
 the operator's own chats to a local store, exposes them through a documented
 CLI, and can **send** messages through an explicit, audited send surface.
 
-**The daemon, store, and audited HTTP send surface are implemented. The CLI
-remains a separate task.**
+**The daemon, local store, CLI, and audited send surface are implemented.**
 
 All outgoing behavior belongs in `src/send/`, through an explicit
 operator or documented script action via `wallfly send` or local `POST /send`.
@@ -23,14 +22,16 @@ incoming-message-triggered sends.
 🚧 Under active construction — see the issue tracker.
 
 The JSONL store and Baileys listener are implemented with offline tests and CI.
-The send surface is implemented; the CLI remains planned. Baileys is pinned
+The CLI and send surface are implemented. Baileys is pinned
 to `6.7.23`; the store has zero runtime dependencies.
 
 ## Quickstart
 
 ```sh
 npm ci
-npm run daemon
+npm run build
+npm link
+wallfly pair
 ```
 
 Scan the printed QR with WhatsApp **Settings > Linked devices**. The daemon
@@ -38,8 +39,157 @@ also prints a private PNG path. Control it locally with `GET /status`,
 `POST /stop`, and `POST /send` at `http://127.0.0.1:7877`; Ctrl-C also stops it. See
 [the daemon guide](docs/DAEMON.md) for pairing, persistence, and reconnect.
 See [the send guide](docs/SEND.md) for text/image/document requests, audit
-records, and receipt/presence opt-ins. The `wallfly` CLI commands are not
-available yet.
+records, and receipt/presence opt-ins. After pairing, use `wallfly start` to
+reuse saved credentials. Both commands stay in the foreground. Without
+`npm link`, run `node bin/wallfly COMMAND`; `npm run daemon` builds and starts
+the same CLI. `npm ci` also builds via the prepare script.
+
+## CLI reference
+
+All commands support `-h` / `--help`, with flags and examples. The CLI uses
+Node's `util.parseArgs`; it adds no runtime dependencies. Defaults live in
+`~/.wallfly/config.json` (0600); the directory is 0700. Files and message data
+remain local. Examples below contain synthetic identifiers and text; substitute
+your recorded chat JIDs (`wallfly chats`) when operating your own account.
+Use `--` before a positional query starting with a dash.
+
+| Command | Flags / arguments | Example |
+| --- | --- | --- |
+| `start` | Foreground daemon; creates `~/.wallfly/wallfly.pid` (0600). | `wallfly start` |
+| `stop` | SIGTERM through pidfile, or local `POST /stop` if missing/stale. | `wallfly stop` |
+| `status` | JSON status from local `GET /status`. | `wallfly status` |
+| `pair` | Foreground daemon with terminal QR and private PNG; reuses existing auth. Stop a running daemon first. | `wallfly pair` |
+| `config get [KEY]` | Show one setting or all settings as JSON. | `wallfly config get port` |
+| `config set KEY VALUE` | Validate and persist a setting. Restart the daemon to apply. | `wallfly config set keepRotations 10` |
+| `send` | `--to JID`, `--text TEXT` or `--image PATH` or `--document PATH`; optional `--caption C`, `--direct`. | `wallfly send --to synthetic-chat@s.whatsapp.net --text "synthetic-text"` |
+| `sends` | `--limit N` (default 100): latest audit records as JSONL in append order. | `wallfly sends --limit 20` |
+| `chats` | Recorded chats as JSONL: `jid`, `name`, `type`, `count`, `lastTs` (Unix ms). | `wallfly chats` |
+| `search QUERY` | `--chat JID`, `--sender JID`, `--from ISO`, `--to ISO`, `--regex`, `--limit N`, `--json`. | `wallfly search synthetic --chat synthetic-chat@invalid --json` |
+| `tail` | `-n N` (default 10), `-f` / `--follow`, `--chat JID`. JSONL output. | `wallfly tail -n 20 -f --chat synthetic-chat@invalid` |
+| `export` | `--chat JID`, `--from ISO`, `--to ISO`, required `--format json\|csv`, `--out FILE`. | `wallfly export --format csv --out ./messages.csv` |
+
+Exit codes: **0** success, **1** invalid usage/configuration or local operation
+failure, **2** daemon/transport unavailable, **3** no results. Empty JSON searches
+print `[]`; empty exports create `[]` or a CSV header and exit 3. A following
+tail stays running even if initially empty and exits 0 on Ctrl-C. Counts and
+limits must be nonnegative integers; a limit of zero produces no results.
+
+Search, tail, chats, sends, and export read local files without a running daemon.
+Message reads include retained rotations in append order. Search defaults to a
+case-sensitive substring and readable lines with ISO time, chat, sender, and
+JSON-escaped body. `--json` emits an array of complete schema records. `--regex`
+treats the query as a JavaScript regex source (no slash delimiters or flags).
+All filters combine with AND; time bounds are inclusive message timestamps,
+formatted as ISO datetimes with a timezone. Search limits select the first N
+matches; no limit means all matches.
+
+```sh
+wallfly search '^synthetic-[AB]' --regex --sender synthetic-sender@invalid --limit 50
+wallfly search synthetic --from 2026-01-01T00:00:00Z --to 2026-01-31T23:59:59Z --json
+wallfly tail -n 0 -f
+wallfly export --chat synthetic-chat@invalid --from 2026-01-01T00:00:00Z --format json --out ./archive.json
+```
+
+Tail applies the chat filter before selecting the last N records. Follow mode
+polls every 200 ms and resumes from a store cursor, including through rotation.
+If retention deletes its cursor, it exits with an error; restart tail to select
+a new starting point. Export writes a JSON array or a CSV with all schema fields,
+including a header and standard quoting for commas, quotes, and newlines. Output
+files use 0600; existing files are refused. Interrupted/failed exports can leave
+partial files; inspect or remove them before choosing the same destination again.
+
+### Configuration
+
+| Key | Default | Accepted values |
+| --- | --- | --- |
+| `read_receipts` | `false` | `true` or `false` |
+| `presence` | `false` | `true` or `false` |
+| `port` | `7877` | Integer 1–65535; HTTP remains on `127.0.0.1`. |
+| `maxBytes` | `10485760` | Positive integer bytes before message-store rotation. |
+| `keepRotations` | `5` | Nonnegative integer retained archives, plus the current file. |
+
+```sh
+wallfly config get
+wallfly config set read_receipts true
+wallfly config set presence true
+wallfly config set port 7877
+wallfly config set maxBytes 20971520
+wallfly config set keepRotations 10
+```
+
+Receipt and presence gates default OFF. Enabling receipts alone never marks
+incoming chats read; the explicit HTTP send surface also needs `readKeys` to
+request that action. Presence, when enabled, broadcasts available during an
+explicit send. Restart after changes, using the old port to stop the existing
+daemon if the pidfile is unavailable. Rotation deletes data beyond retention.
+
+### Explicit sends and audit log
+
+`wallfly send` calls local `POST /send`; `--direct` uses `src/send/` with saved
+auth for one connection and send attempt, without starting a daemon. Stop the
+daemon first; foreground and direct modes share an exclusive pidfile. Direct
+mode requires existing auth and waits up to 30 seconds for a connection. It
+does not pair or retry. Pairing QR output is sensitive; avoid capturing it in logs.
+
+```sh
+wallfly send --to synthetic-chat@s.whatsapp.net --image ./image.png --caption "synthetic-caption"
+wallfly send --to synthetic-chat@s.whatsapp.net --document ./document.pdf
+wallfly send --to synthetic-chat@s.whatsapp.net --text "synthetic-text" --direct
+wallfly sends --limit 10
+```
+
+Send exactly one text, image, or document. For media, `--text` is also accepted
+as a caption; do not supply it alongside `--caption`. Media paths are resolved
+locally to absolute paths before HTTP; files must be readable, nonempty regular
+files of at most 64 MiB (no symlinks). A media caption does not create an extra
+text send. There are no scheduled, automatic, or incoming-triggered sends.
+
+Before any outgoing operation, `src/send/` appends and syncs a private entry to
+`~/.wallfly/sends.jsonl`: `{v:1, ts, jid, kind, textSha256, mediaPath}`. The CLI
+prints the **exact audit entry** returned by this request. The log stores the
+SHA-256 of text/caption, never its raw content; it records attempts, including
+failures after append, and does not rotate. Audit failure prevents transmission.
+A transport failure or HTTP timeout can leave delivery uncertain; check before
+manually retrying. See [SEND.md](docs/SEND.md) for the HTTP contract and privacy
+implications. The local API has no authentication; local processes can use it.
+
+## systemd service
+
+[docs/wallfly.service](docs/wallfly.service) is a **user service** template.
+Install a built checkout at `~/.local/share/wallfly` (or change WorkingDirectory
+and ExecStart in the unit). The unit expects Node at `/usr/bin/node`; replace
+that with the absolute path to Node >=20 on your system. Pair interactively
+before enabling the service so pairing QR codes stay out of the journal.
+
+```sh
+# From the installed checkout:
+npm ci
+node bin/wallfly pair
+# After pairing succeeds, Ctrl-C, then:
+install -d -m 700 ~/.wallfly
+mkdir -p ~/.config/systemd/user
+cp docs/wallfly.service ~/.config/systemd/user/wallfly.service
+systemctl --user daemon-reload
+systemctl --user enable --now wallfly.service
+systemctl --user status wallfly.service
+journalctl --user -u wallfly.service
+```
+
+The service runs the foreground CLI and systemd tracks its PID; SIGTERM drains
+queued events and in-flight sends. `UMask=0077`, `NoNewPrivileges`, a private
+temporary directory, read-only system/home access, and a single writable
+`~/.wallfly` path restrict filesystem access. Some user managers require kernel
+unprivileged user namespaces for filesystem sandboxing; verify the unit starts
+on your distribution before relying on those protections. Media in read-only
+home paths remains readable. Network access is required for WhatsApp; the
+control endpoint still binds only to loopback. V8 needs executable memory, so
+the template does not enable `MemoryDenyWriteExecute`.
+
+Use `systemctl --user stop wallfly` before manual pairing or direct sends.
+The unit restarts failures, never queues or schedules sends. For operation after
+logout, optionally enable user lingering using your distribution's documented
+`loginctl enable-linger` process. Re-pair interactively after logout/auth failure;
+do not collect or share QR/session data from service logs.
 
 ## Data format
 
