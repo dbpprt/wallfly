@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -63,7 +63,7 @@ test('global and every command help contain options, examples and exit codes', a
     assert.match(result.stdout, /--help/);
     assert.match(result.stdout, /Exit codes:/);
   }
-  for (const args of [[], ['unknown'], ['tail', '--unknown'], ['status', 'extra'], ['search'], ['config', 'set']]) {
+  for (const args of [[], ['unknown'], ['tail', '--unknown'], ['status', 'extra'], ['search'], ['config', 'set'], ['token'], ['token', 'unknown'], ['token', 'rotate', 'extra']]) {
     assert.equal((await run(args)).code, 1);
   }
 });
@@ -172,7 +172,8 @@ test('config persists all settings privately, validates types/ranges and default
   assert.equal((await run(['config', 'set', 'media_archival', 'false'])).code, 0);
   assert.equal((await run(['config', 'get', 'media_archival'])).stdout, 'false\n');
   assert.equal((await run(['config', 'set', 'media_archival', '1'])).code, 1);
-  for (const [key, value] of [['read_receipts', 'true'], ['presence', 'true'], ['port', '8001'], ['maxBytes', '1000'], ['keepRotations', '0']]) {
+  assert.equal((await run(['config', 'get', 'audit_rotations'])).stdout, '10\n');
+  for (const [key, value] of [['read_receipts', 'true'], ['presence', 'true'], ['port', '8001'], ['maxBytes', '1000'], ['keepRotations', '0'], ['audit_rotations', '2']]) {
     assert.equal((await run(['config', 'set', key!, value!])).code, 0);
     assert.equal((await run(['config', 'get', key!])).stdout.trim(), value);
   }
@@ -184,7 +185,7 @@ test('config persists all settings privately, validates types/ranges and default
   assert.equal(statSync(directory).mode & 0o777, 0o700);
   const original = readFileSync(path, 'utf8');
   for (const [key, value] of [['unknown', '1'], ['presence', '1'], ['presence', '"true"'], ['port', '0'], ['port', '65536'],
-    ['maxBytes', '0'], ['keepRotations', '-1'], ['keepRotations', '1.5']]) {
+    ['maxBytes', '0'], ['keepRotations', '-1'], ['keepRotations', '1.5'], ['audit_rotations', '-1'], ['audit_rotations', '1.5'], ['audit_rotations', 'true'], ['audit_rotations', '9007199254740992']]) {
     assert.equal((await run(['config', 'set', key!, value!])).code, 1);
     assert.equal(readFileSync(path, 'utf8'), original);
   }
@@ -242,10 +243,10 @@ test('send validates arguments/media before HTTP, resolves paths, and maps serve
   assert.equal(calls, 0);
   assert.equal((await run(['send', '--to', jid, '--image', media, '--text', 'synthetic-caption'], { fetch: http })).code, 0);
   assert.equal(calls, 1);
-  for (const status of [400, 403, 500, 502, 503]) {
+  for (const status of [400, 401, 403, 500, 502, 503]) {
     assert.equal((await run(['send', '--to', jid, '--text', 'synthetic'], {
       fetch: async () => new Response(JSON.stringify({ error: 'synthetic-failure' }), { status }),
-    })).code, status >= 500 ? 2 : 1);
+    })).code, status === 401 ? 4 : status >= 500 ? 2 : 1);
   }
   assert.equal((await run(['send', '--to', jid, '--text', 'synthetic'], { fetch: async () => new Response('{}') })).code, 1);
 });
@@ -269,10 +270,12 @@ test('foreground lifecycle owns private pidfile, loads saved options, cleans on 
   await run(['config', 'set', 'port', '8123']);
   await run(['config', 'set', 'maxBytes', '2048']);
   await run(['config', 'set', 'keepRotations', '2']);
+  await run(['config', 'set', 'audit_rotations', '3']);
   for (const command of ['start', 'pair']) {
     const controller = new AbortController(); let started = false; let stopped = 0;
     const running = run([command], { signal: controller.signal, daemonFactory: (options) => {
       assert.equal(options.port, 8123); assert.equal(options.maxBytes, 2048); assert.equal(options.keepRotations, 2);
+      assert.equal(options.audit_rotations, 3);
       assert.equal(options.presence, false); assert.equal(options.read_receipts, false);
       assert.equal(statSync(join(directory, 'wallfly.pid')).mode & 0o777, 0o600);
       return { start: async () => { started = true; }, stop: async () => { stopped++; }, status: () => ({ state: 'connected' }) };
@@ -288,17 +291,16 @@ test('foreground lifecycle owns private pidfile, loads saved options, cleans on 
   assert.equal(existsSync(join(directory, 'wallfly.pid')), false);
 });
 
-test('stop sends SIGTERM to pidfile process, and malformed pidfiles never reach HTTP', async (t) => {
+test('stop uses authenticated HTTP even with a pidfile; rejection cannot signal a process', async (t) => {
   const { run, directory } = setup(t, false);
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000); process.stdout.write("ready");']);
-  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill(); });
-  await once(child.stdout!, 'data');
-  const exited = once(child, 'exit');
-  writeFileSync(join(directory, 'wallfly.pid'), `${child.pid}\n`);
-  assert.equal((await run(['stop'])).code, 0);
-  assert.deepEqual(await exited, [null, 'SIGTERM']);
-  writeFileSync(join(directory, 'wallfly.pid'), '-1\n');
-  assert.equal((await run(['stop'], { fetch: async () => assert.fail('Must not contact HTTP') })).code, 1);
+  writeFileSync(join(directory, 'wallfly.pid'), `${process.pid}\n`);
+  let contacted = false;
+  const result = await run(['stop'], { fetch: async () => {
+    contacted = true;
+    return new Response('{"error":"Authentication required"}', { status: 401 });
+  } });
+  assert.equal(result.code, 4);
+  assert.ok(contacted);
 });
 
 test('direct CLI shares pid lock, invokes only explicit send module, and closes saved-auth socket after audit', async (t) => {

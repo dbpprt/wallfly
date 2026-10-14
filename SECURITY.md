@@ -22,8 +22,11 @@ QR codes, `auth/`, or audit/exports from your account.
 ## Security boundaries
 
 - The HTTP status/stop/send API binds only to `127.0.0.1`; Host/Origin checks
-  limit browser access. It has no authentication. Local processes running as
-  your user can send with the linked account. Do not expose it through a proxy.
+  limit browser access. All POST requests require a private bearer token stored
+  in `~/.wallfly/auth/token`; unauthenticated GET status exposes only `running`.
+  Rotate with `wallfly token rotate` to revoke old API credentials immediately.
+  Processes running as your user/root can read the token and linked-device
+  credentials. Do not expose the API through a proxy.
 - Files use private permissions, not at-rest encryption. Protect the host,
   `~/.wallfly/`, terminal output, exports, and backups. Credentials and pairing
   QR codes grant account access; revoke the linked device from the phone if

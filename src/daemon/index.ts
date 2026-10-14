@@ -9,6 +9,7 @@ import { handleSendRequest } from '../send/http.js';
 import type { MessageRecord } from '../store/index.js';
 import { NameCache } from './cache.js';
 import { privateDirectory, removeFile } from './files.js';
+import { authorized, ensureControlToken } from './token.js';
 import { mapMessage } from './map.js';
 import { archiveMedia } from './media.js';
 import { printPairingQr } from './pair.js';
@@ -26,6 +27,7 @@ export interface DaemonOptions {
   port?: number;
   maxBytes?: number;
   keepRotations?: number;
+  audit_rotations?: number;
   /** Explicit opt-ins; both default OFF and only apply during explicit sends. */
   read_receipts?: boolean;
   presence?: boolean;
@@ -123,6 +125,7 @@ export class DaemonService {
       await this.pendingConnection;
       return;
     }
+    ensureControlToken(this.directory);
     this.running = true;
     this.state = 'connecting';
     const server = createServer((request, response) => {
@@ -134,8 +137,16 @@ export class DaemonService {
         request.resume();
         return;
       }
+      const authenticated = authorized(this.directory, request.headers.authorization);
+      if (request.method === 'POST' && !authenticated) {
+        response.statusCode = 401;
+        response.setHeader('WWW-Authenticate', 'Bearer');
+        response.end(JSON.stringify({ error: 'Control API authentication required.' }));
+        request.resume();
+        return;
+      }
       if (request.method === 'GET' && request.url === '/status') {
-        response.end(JSON.stringify(this.status()));
+        response.end(JSON.stringify(authenticated ? this.status() : { running: this.running }));
       } else if (request.method === 'POST' && request.url === '/stop') {
         response.once('finish', () => { void this.stop().catch(() => this.log('stop.failed')); });
         response.end(JSON.stringify({ stopping: true }));

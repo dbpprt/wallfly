@@ -35,11 +35,11 @@ an npm-compatible tarball; this project does not publish to npm.
   media retains `mediaType` and any caption without a `mediaPath`. Media files
   count toward disk usage and have no automatic expiry.
 - **Local security:** files are private by permissions, not encrypted at rest.
-  The loopback API has no authentication; other local processes can send as
-  your linked account. No remote bind option exists.
-- **Operational limits:** rotation deletes older message files; the send audit
-  grows without rotation. A send timeout/failure may leave delivery uncertain;
-  there are no automatic retries. Offline tests do not certify live WhatsApp
+  The loopback API requires a private bearer token for all POST requests.
+  Processes running as your user or root can read the token; protect the host.
+  No remote bind option exists.
+- **Operational limits:** rotation deletes older message and audit files.
+  A send timeout/failure may leave delivery uncertain; there are no automatic retries. Offline tests do not certify live WhatsApp
   compatibility or delivery.
 
 ## Comparison
@@ -110,14 +110,15 @@ Use `--` before a positional query starting with a dash.
 | Command | Flags / arguments | Example |
 | --- | --- | --- |
 | `start` | Foreground daemon; creates `~/.wallfly/wallfly.pid` (0600). | `wallfly start` |
-| `stop` | SIGTERM through pidfile, or local `POST /stop` if missing/stale. | `wallfly stop` |
+| `stop` | Authenticated local `POST /stop`; automatically reads the token. | `wallfly stop` |
+| `token rotate` | Regenerate the API token; revoke the old token immediately. | `wallfly token rotate` |
 | `status` | JSON status from local `GET /status`. | `wallfly status` |
 | `pair` | Foreground daemon with terminal QR and private PNG; reuses existing auth. Stop a running daemon first. | `wallfly pair` |
 | `open MESSAGE_ID` | Print an archived attachment's local path without executing it. | `wallfly open synthetic-id` |
 | `config get [KEY]` | Show one setting or all settings as JSON. | `wallfly config get port` |
 | `config set KEY VALUE` | Validate and persist a setting. Restart the daemon to apply. | `wallfly config set keepRotations 10` |
 | `send` | `--to JID`, `--text TEXT` or `--image PATH` or `--document PATH`; optional `--caption C`, `--direct`. | `wallfly send --to synthetic-chat@s.whatsapp.net --text "synthetic-text"` |
-| `sends` | `--limit N` (default 100): latest audit records as JSONL in append order. | `wallfly sends --limit 20` |
+| `sends` | `--limit N` (default 100): latest retained audit records across rotations as JSONL in append order. | `wallfly sends --limit 20` |
 | `chats` | Recorded chats as JSONL: `jid`, `name`, `phone`, `pushname`, `type`, `count`, `lastTs` (Unix ms). | `wallfly chats` |
 | `who JID` | Known identity as JSON: aliases, phone, pushname and timestamp, cached shared groups and ranks, archived count/lastTs. | `wallfly who synthetic-person@lid` |
 | `alias set JID NAME` | Persist a local manual display name; JID validation matches `send`. Prints JSON with `manual: true`. | `wallfly alias set synthetic-person@lid "Synthetic Display Name"` |
@@ -128,8 +129,8 @@ Use `--` before a positional query starting with a dash.
 | `export` | `--chat JID`, `--from ISO`, `--to ISO`, required `--format json\|csv`, `--out FILE`. | `wallfly export --format csv --out ./messages.csv` |
 
 Exit codes: **0** success, **1** invalid usage/configuration or local operation
-failure, **2** daemon/transport unavailable, **3** no results. Empty JSON searches
-print `[]`; empty exports create `[]` or a CSV header and exit 3. A following
+failure, **2** daemon/transport unavailable, **3** no results, **4** API
+authentication failed. Empty JSON searches print `[]`; empty exports create `[]` or a CSV header and exit 3. A following
 tail stays running even if initially empty and exits 0 on Ctrl-C. Counts and
 limits must be nonnegative integers; a limit of zero produces no results.
 
@@ -166,8 +167,9 @@ partial files; inspect or remove them before choosing the same destination again
 | `presence` | `false` | `true` or `false` |
 | `media_archival` | `true` | `true` or `false`; archive received attachments |
 | `port` | `7877` | Integer 1–65535; HTTP remains on `127.0.0.1`. |
-| `maxBytes` | `10485760` | Positive integer bytes before message-store rotation. |
-| `keepRotations` | `5` | Nonnegative integer retained archives, plus the current file. |
+| `maxBytes` | `10485760` | Positive integer bytes before message and audit rotation. |
+| `keepRotations` | `5` | Nonnegative integer retained message archives, plus the current file. |
+| `audit_rotations` | `10` | Nonnegative integer retained send-audit archives, plus the current file; zero discards older files. |
 
 ```sh
 wallfly config get
@@ -176,6 +178,7 @@ wallfly config set presence true
 wallfly config set port 7877
 wallfly config set maxBytes 20971520
 wallfly config set keepRotations 10
+wallfly config set audit_rotations 10
 ```
 
 Receipt and presence gates default OFF. Enabling receipts alone never marks
@@ -280,10 +283,17 @@ appends and syncs a private entry to
 `~/.wallfly/sends.jsonl`: `{v:1, ts, jid, kind, textSha256, mediaPath}`. The CLI
 prints the **exact audit entry** returned by this request. The log stores the
 SHA-256 of text/caption, never its raw content; it records attempts, including
-failures after append, and does not rotate. Audit failure prevents transmission.
+failures after append. It rotates at `maxBytes`, keeping `audit_rotations` archives
+(default ten) plus the current file. Audit failure prevents transmission.
 A transport failure or HTTP timeout can leave delivery uncertain; check before
 manually retrying. See [SEND.md](docs/SEND.md) for the HTTP contract and privacy
-implications. The local API has no authentication; local processes can use it.
+implications. The CLI automatically reads `~/.wallfly/auth/token` for API
+requests. All POST endpoints require `Authorization: Bearer <token>`; missing or
+wrong tokens return HTTP 401 (CLI exit 4). Unauthenticated status returns only
+`{"running":true}`. First start generates a private 256-bit token;
+`wallfly token rotate` revokes it immediately without restarting the daemon.
+The rotate command prints a confirmation, never the token. See [DAEMON.md](docs/DAEMON.md)
+for authenticated HTTP examples and the local security boundary.
 
 ## systemd service
 

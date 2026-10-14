@@ -15,6 +15,7 @@ import { printPairingQr } from '../src/daemon/pair.js';
 import { JsonlStore } from '../src/store/index.js';
 import { SendService } from '../src/send/index.js';
 import { runCli } from '../src/cli/index.js';
+import { readControlToken } from '../src/daemon/token.js';
 
 // All identifiers, text, display names, and pairing input are synthetic markers.
 class FakeSocket implements ListenerSocket {
@@ -339,19 +340,19 @@ test('socket lifecycle events use the daemon logger', async (t) => {
 });
 
 test('control endpoint only exposes loopback status, stop, and send; unknown routes reject', async (t) => {
-  const { service, socket } = setup(t);
+  const { service, socket, root } = setup(t);
   await service.start();
   const port = service.status().port!;
   assert.equal((await control(port, 'GET', '/status')).status, 200);
   for (const [method, path] of [['GET', '/send'], ['GET', '/stop'], ['POST', '/status'],
     ['GET', '/'], ['GET', '/status?extra=true']]) {
-    assert.equal((await control(port, method!, path!)).status, 404);
+    assert.equal((await control(port, method!, path!, undefined, { authorization: `Bearer ${readControlToken(root)}` })).status, 404);
   }
   socket.emit('connection.update', { connection: 'open' });
   await service.flush();
-  const response = await control(port, 'GET', '/status');
+  const response = await control(port, 'GET', '/status', undefined, { authorization: `Bearer ${readControlToken(root)}` });
   assert.equal((response.body as { connected: boolean }).connected, true);
-  assert.equal((await control(port, 'POST', '/stop')).status, 200);
+  assert.equal((await control(port, 'POST', '/stop', undefined, { authorization: `Bearer ${readControlToken(root)}` })).status, 200);
   await eventually(() => socket.closed === 1);
   assert.equal(service.status().state, 'stopped');
   assert.equal(service.status().port, null);
@@ -500,7 +501,7 @@ test('POST /send validates JSON, audits, sends only while connected, and default
   const { service, socket, root } = setup(t);
   await service.start();
   const port = service.status().port!;
-  const headers = { 'content-type': 'application/json' };
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${readControlToken(root)}` };
   const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-send-text' });
   assert.equal((await control(port, 'POST', '/send', body, headers)).status, 503);
   assert.equal(existsSync(join(root, 'sends.jsonl')), false);
@@ -514,7 +515,7 @@ test('POST /send validates JSON, audits, sends only while connected, and default
   assert.equal(JSON.parse(readFileSync(join(root, 'sends.jsonl'), 'utf8')).kind, 'text');
   assert.equal((await control(port, 'POST', '/send', '{', headers)).status, 400);
   assert.equal((await control(port, 'POST', '/send', '{}', headers)).status, 400);
-  assert.equal((await control(port, 'POST', '/send', body)).status, 415);
+  assert.equal((await control(port, 'POST', '/send', body, { authorization: headers.authorization })).status, 415);
   assert.equal((await control(port, 'POST', '/send', body, { ...headers, origin: 'https://synthetic.invalid' })).status, 403);
   assert.equal((await control(port, 'POST', '/send', body, { ...headers, host: 'synthetic.invalid' })).status, 403);
   assert.equal((await control(port, 'POST', '/send', JSON.stringify({ text: 'x'.repeat(1024 * 1024) }), headers)).status, 413);
@@ -525,7 +526,7 @@ test('POST /send validates JSON, audits, sends only while connected, and default
 });
 
 test('enabled config gates cause no automatic effects; POST /send explicitly triggers them', async (t) => {
-  const { service, socket } = setup(t, { read_receipts: true, presence: true });
+  const { service, socket, root } = setup(t, { read_receipts: true, presence: true });
   await service.start();
   socket.emit('connection.update', { connection: 'open' });
   socket.emit('messages.upsert', { type: 'notify', messages: [message()] });
@@ -533,7 +534,7 @@ test('enabled config gates cause no automatic effects; POST /send explicitly tri
   assert.deepEqual(socket.outgoingCalls, []);
   const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-text',
     readKeys: [{ remoteJid: 'synthetic-chat@s.whatsapp.net', id: 'synthetic-read-id' }] });
-  assert.equal((await control(service.status().port!, 'POST', '/send', body, { 'content-type': 'application/json' })).status, 200);
+  assert.equal((await control(service.status().port!, 'POST', '/send', body, { 'content-type': 'application/json', authorization: `Bearer ${readControlToken(root)}` })).status, 200);
   assert.deepEqual(socket.outgoingCalls, ['presence', 'receipts', 'message']);
 });
 
@@ -550,7 +551,7 @@ test('stop drains an in-flight send before closing its socket and rejects queued
   socket.emit('connection.update', { connection: 'open' });
   await service.flush();
   const port = service.status().port!;
-  const headers = { 'content-type': 'application/json' };
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${readControlToken(root)}` };
   const body = JSON.stringify({ jid: 'synthetic-chat@s.whatsapp.net', text: 'synthetic-text' });
   const first = control(port, 'POST', '/send', body, headers);
   await eventually(() => release !== undefined);

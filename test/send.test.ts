@@ -257,3 +257,90 @@ test('send snapshots the request before asynchronous execution', async (t) => {
   await sending;
   assert.equal(state.records()[0]?.jid, jid);
 });
+
+test('audit rotates before crossing maxBytes, retains newest entries, and sends reads all retained files', async (t) => {
+  const state = setup(t);
+  const first = await state.service.sendWithAudit({ jid, text: 'synthetic-first' });
+  const bytes = statSync(state.service.auditPath).size;
+  const service = new SendService({ directory: state.directory, maxBytes: bytes * 2, audit_rotations: 2 }, () => state.transport);
+  const second = await service.sendWithAudit({ jid, text: 'synthetic-second' });
+  assert.equal(existsSync(`${service.auditPath}.1`), false);
+  assert.equal(statSync(service.auditPath).size, bytes * 2);
+  const third = await service.sendWithAudit({ jid, text: 'synthetic-third' });
+  assert.deepEqual(JSON.parse(readFileSync(`${service.auditPath}.1`, 'utf8').split('\n')[0]!), first.audit);
+  const { auditEntries } = await import('../src/cli/data.js');
+  assert.deepEqual(await auditEntries(state.directory, 100), [first.audit, second.audit, third.audit]);
+  assert.deepEqual(await auditEntries(state.directory, 2), [second.audit, third.audit]);
+  assert.deepEqual(await auditEntries(state.directory, 0), []);
+  assert.equal(statSync(`${service.auditPath}.1`).mode & 0o777, 0o600);
+});
+
+test('default ten audit rotations bound retention; lowering retention and zero retention prune on rotation', async (t) => {
+  const state = setup(t, { maxBytes: 1 });
+  const attempts: SendAuditRecord[] = [];
+  for (let i = 0; i < 13; i++) {
+    attempts.push((await state.service.sendWithAudit({ jid, text: `synthetic-${i}` })).audit);
+  }
+  assert.equal(existsSync(`${state.service.auditPath}.10`), true);
+  assert.equal(existsSync(`${state.service.auditPath}.11`), false);
+  const { auditEntries } = await import('../src/cli/data.js');
+  assert.deepEqual(await auditEntries(state.directory, 100), attempts.slice(-11));
+  const reduced = new SendService({ directory: state.directory, maxBytes: 1, audit_rotations: 2 }, () => state.transport);
+  const newest = await reduced.sendWithAudit({ jid, text: 'synthetic-newest' });
+  assert.deepEqual(await auditEntries(state.directory, 100), [...attempts.slice(-2), newest.audit]);
+  assert.equal(existsSync(`${reduced.auditPath}.3`), false);
+  const zero = new SendService({ directory: state.directory, maxBytes: 1, audit_rotations: 0 }, () => state.transport);
+  const only = await zero.sendWithAudit({ jid, text: 'synthetic-only' });
+  assert.deepEqual(await auditEntries(state.directory, 100), [only.audit]);
+  assert.equal(existsSync(`${zero.auditPath}.1`), false);
+  assert.equal(existsSync(`${zero.auditPath}.2`), false);
+});
+
+test('rotation failures and incomplete current records prevent every outgoing call', async (t) => {
+  for (const kind of ['directory', 'symlink', 'incomplete', 'rename', 'fsync'] as const) {
+    const state = setup(t, { maxBytes: 1, presence: true, read_receipts: true });
+    await state.service.send({ jid, text: 'synthetic-first' });
+    state.calls.length = 0;
+    const original = readFileSync(state.service.auditPath, 'utf8');
+    const archived = `${state.service.auditPath}.1`;
+    const sentinel = join(state.directory, 'sentinel');
+    if (kind === 'directory') mkdirSync(archived);
+    if (kind === 'symlink') { writeFileSync(sentinel, 'synthetic-sentinel'); symlinkSync(sentinel, archived); }
+    if (kind === 'incomplete') writeFileSync(state.service.auditPath, '{');
+    if (kind === 'rename') t.mock.method(fs, 'renameSync', () => { throw new Error('synthetic-rename-failure'); });
+    if (kind === 'fsync') t.mock.method(fs, 'fsyncSync', () => { throw new Error('synthetic-sync-failure'); });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(state.service.send({ jid, text: 'synthetic-second', readKeys }), { status: 500 });
+      assert.deepEqual(state.calls, []);
+      if (kind === 'symlink') assert.equal(readFileSync(sentinel, 'utf8'), 'synthetic-sentinel');
+      if (kind === 'directory' || kind === 'symlink' || kind === 'rename') {
+        assert.equal(readFileSync(state.service.auditPath, 'utf8'), original);
+      }
+      if (kind === 'fsync') assert.equal(readFileSync(archived, 'utf8'), original);
+    } finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+  }
+});
+
+test('audit rotation config propagates to send options and rejects invalid types/ranges', async (t) => {
+  const { directory, transport } = setup(t);
+  const { setConfig } = await import('../src/cli/config.js');
+  const { runCli } = await import('../src/cli/index.js');
+  setConfig(directory, 'maxBytes', '1');
+  setConfig(directory, 'audit_rotations', '1');
+  const config = loadSendConfig(directory);
+  assert.equal(config.maxBytes, 1);
+  assert.equal(config.audit_rotations, 1);
+  const service = new SendService({ ...config, directory }, () => transport);
+  for (let i = 0; i < 4; i++) await service.send({ jid, text: `synthetic-${i}` });
+  assert.equal(existsSync(`${service.auditPath}.1`), true);
+  assert.equal(existsSync(`${service.auditPath}.2`), false);
+  let output = '';
+  assert.equal(await runCli(['sends'], { directory, stdout: (s) => { output += s; } }), 0);
+  assert.equal(output.trim().split('\n').length, 2);
+  for (const value of [-1, 1.5, '2', true, Number.MAX_SAFE_INTEGER + 1]) {
+    writeFileSync(join(directory, 'config.json'), JSON.stringify({ audit_rotations: value }));
+    assert.throws(() => loadSendConfig(directory), /audit_rotations/);
+    assert.throws(() => new SendService({ audit_rotations: value as number }, () => transport), /audit_rotations/);
+  }
+});

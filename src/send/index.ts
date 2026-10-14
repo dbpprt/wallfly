@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 import {
-  closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync, readFileSync,
-  readSync, writeSync,
+  closeSync, constants, fstatSync, openSync, readFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import type { WASocket, WAMessageKey } from '@whiskeysockets/baileys';
 import { privateDirectory } from '../daemon/files.js';
 import { validJid } from '../daemon/identity.js';
+import { appendAudit } from './audit.js';
 
 export interface SendRequest {
   jid: string;
@@ -56,9 +56,18 @@ export interface SendOptions {
   directory?: string;
   read_receipts?: boolean;
   presence?: boolean;
+  maxBytes?: number;
+  audit_rotations?: number;
 }
 
 export function validateSendOptions(options: SendOptions): void {
+  if (options.maxBytes !== undefined && (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1)) {
+    throw new RangeError('maxBytes must be a positive safe integer.');
+  }
+  if (options.audit_rotations !== undefined
+    && (!Number.isSafeInteger(options.audit_rotations) || options.audit_rotations < 0)) {
+    throw new RangeError('audit_rotations must be a nonnegative safe integer.');
+  }
   for (const key of ['read_receipts', 'presence'] as const) {
     if (options[key] !== undefined && typeof options[key] !== 'boolean') {
       throw new TypeError(`${key} must be a boolean.`);
@@ -104,26 +113,6 @@ function localMedia(path: string): Buffer {
       throw new Error('Media must be a nonempty regular file of at most 64 MiB.');
     }
     return readFileSync(fd);
-  } finally { closeSync(fd); }
-}
-
-/** Append and sync before any outgoing call; unsafe/incomplete audit logs fail closed. */
-function appendAudit(path: string, record: SendAuditRecord): void {
-  const fd = openSync(path, constants.O_CREAT | constants.O_APPEND | constants.O_RDWR
-    | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) throw new Error('Audit must be a regular file.');
-    fchmodSync(fd, 0o600);
-    if (stat.size > 0) {
-      const last = Buffer.alloc(1);
-      if (readSync(fd, last, 0, 1, stat.size - 1) !== 1 || last[0] !== 10) {
-        throw new Error('Audit has an incomplete final record.');
-      }
-    }
-    const data = Buffer.from(JSON.stringify(record) + '\n');
-    if (writeSync(fd, data) !== data.length) throw new Error('Incomplete audit append.');
-    fsyncSync(fd);
   } finally { closeSync(fd); }
 }
 
@@ -178,7 +167,8 @@ export class SendService {
       textSha256: createHash('sha256').update(text).digest('hex'), mediaPath: absolutePath };
     try {
       privateDirectory(this.directory);
-      appendAudit(this.auditPath, audit);
+      appendAudit(this.auditPath, audit, this.options.maxBytes ?? 10 * 1024 * 1024,
+        this.options.audit_rotations ?? 10);
     } catch { throw new SendError(500, 'Audit append failed; send prevented.'); }
     // A disconnect/stop during side effects must never switch this request to another socket.
     const active = (): void => {

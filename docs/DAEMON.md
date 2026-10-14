@@ -31,26 +31,53 @@ including hostnames and IPv6 loopback, are rejected. Only these routes exist:
 
 | Method | Route | Response |
 | --- | --- | --- |
-| GET | `/status` | JSON with `state`, `connected`, `reconnectAttempt`, `recordedMessages`, and `port`. |
+| GET | `/status` | With token: `state`, `connected`, `reconnectAttempt`, `recordedMessages`, and `port`. Without valid token: only `{"running":true}`. |
 | POST | `/send` | Validated, audited text/image/document send; see [SEND.md](SEND.md). |
 | POST | `/stop` | `{ "stopping": true }`; then drain queued events, close the socket and HTTP server. |
 
-Unknown paths or methods return `404`. `/status` never
+Unauthenticated POST requests return `401`, including unknown paths. Otherwise,
+unknown paths or methods return `404`. `/status` never
 returns credentials, account identifiers, message text, or QR contents. The API
-has no authentication and is accessible to other local processes. Requests
+requires `Authorization: Bearer <token>` for every POST. Requests
 must use the bound `127.0.0.1:PORT` Host header and omit Origin; this rejects
 browser-origin requests and hostnames used for DNS rebinding. There is no
 remote bind opt-in.
 
 ```sh
 curl http://127.0.0.1:7877/status
-curl -X POST http://127.0.0.1:7877/stop
+curl -X POST http://127.0.0.1:7877/stop \
+  -H "Authorization: Bearer $(cat ~/.wallfly/auth/token)"
 ```
 
 `SIGINT` and `SIGTERM` also stop the listener gracefully. `wallfly start` and
 `wallfly pair` run in the foreground with an exclusive private pidfile;
-`wallfly stop` signals that PID or falls back to `POST /stop`. `npm run daemon`
+`wallfly stop` uses authenticated `POST /stop`. `npm run daemon`
 uses the same CLI lifecycle. See the README for configuration and systemd.
+
+## Control token
+
+Before listening on first start, wallfly generates 32 random bytes (256 bits),
+encoded as hexadecimal in `~/.wallfly/auth/token`. The auth directory is `0700`,
+the file `0600`. Restarts reuse the persisted token. Creation and rotation use a
+private lock and atomic replacement so concurrent starts do not publish partial
+credentials. Malformed or unsafe token files fail startup; request authentication
+fails closed if the token becomes missing or unreadable.
+
+`wallfly send`, `wallfly stop`, and `wallfly status` read the token automatically.
+HTTP 401 maps to CLI exit code **4**. GET status stays available with missing or
+wrong credentials but returns only `{"running":true}`; authenticated requests
+receive full daemon status. No status response contains the token.
+
+Run `wallfly token rotate` to replace the token and revoke the old credential
+immediately, without a restart. Rotation prints `{"rotated":true}`, never the token.
+It can also create or recover a missing/malformed token. Update explicit scripts
+that cached the old token. A request already authorized before rotation may finish.
+
+Private file permissions restrict other OS users. Processes running as the owner
+or root can read this credential and the linked-device session; bearer auth does
+not isolate applications sharing that OS identity. Do not proxy the API to a
+network. Keep tokens out of terminal logs, issues, and repositories. The curl
+example passes the token in process arguments; prefer the CLI on shared hosts.
 
 ## Persistence and reconnect
 

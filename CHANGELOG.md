@@ -15,6 +15,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Surface attachment paths in search/exports and add `wallfly open MESSAGE_ID`
   to print a local path without executing it.
 
+### Security
+
+- Require a private 256-bit bearer token for all control API POST requests;
+  redact unauthenticated status to availability only. The CLI supplies the token
+  automatically and exits 4 on HTTP 401. `wallfly token rotate` revokes old tokens
+  immediately; stop always uses the authenticated API.
+- Rotate send audit logs at `maxBytes`, retaining ten archives by default;
+  `audit_rotations` config controls retention and `wallfly sends` reads retained
+  history. Rotation failures block outgoing operations.
+
 ## [0.1.0] - 2026-10-14
 
 ### Added
