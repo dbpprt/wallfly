@@ -2,7 +2,7 @@ import type { proto, WAMessage } from '@whiskeysockets/baileys';
 import type { MessageRecord } from '../store/index.js';
 import { NameCache, normalizedJid } from './cache.js';
 
-function contentOf(message: proto.IMessage): proto.IMessage {
+export function contentOf(message: proto.IMessage): proto.IMessage {
   let content = message;
   for (let depth = 0; depth < 10; depth++) {
     const nested = content.ephemeralMessage?.message ?? content.viewOnceMessage?.message
@@ -40,7 +40,7 @@ export function mapMessage(
     && !content.locationMessage && !content.liveLocationMessage && !content.reactionMessage
     && !content.pollCreationMessage && !content.pollCreationMessageV2 && !content.pollCreationMessageV3) return null;
   return {
-    v: 1, ts, receivedAt, chatJid, chatName: cache.observedName(chatJid), chatType: group ? 'group' : 'dm',
+    v: 2, ts, receivedAt, chatJid, chatName: cache.observedName(chatJid), chatType: group ? 'group' : 'dm',
     fromMe: key.fromMe ?? false, senderJid, senderName: cache.observedName(senderJid),
     pushName: message.pushName ?? null, body: text ?? media?.[1] ?? '',
     mediaType: media?.[0] ?? null, messageId: key.id, syncType,

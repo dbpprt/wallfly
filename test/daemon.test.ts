@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +36,7 @@ class FakeSocket implements ListenerSocket {
       this.emitter.off(event, callback);
     },
   };
+  async downloadMedia(): Promise<AsyncIterable<Uint8Array>> { throw new Error('Synthetic unavailable media.'); }
   async saveCredentials(): Promise<void> { this.saved++; }
   end(): void { this.closed++; }
   emit<K extends ListenerEvent>(event: K, value: BaileysEventMap[K]): void {
@@ -123,13 +124,13 @@ function control(port: number, method: string, path: string, body?: string,
   });
 }
 
-test('maps schema v1 with cached names, timestamps, sync type, group sender, and own device JID', (t) => {
+test('maps schema v2 with cached names, timestamps, sync type, group sender, and own device JID', (t) => {
   const cache = new NameCache(directory(t));
   cache.contacts([{ id: 'test-chat@invalid', name: 'synthetic-chat' },
     { id: 'test-sender@invalid', name: 'synthetic-sender' }]);
   cache.groups([{ id: 'test-group@g.us', subject: 'synthetic-group' }]);
   const result = mapMessage(message(), 'notify', cache, 'test-self@invalid', 456000);
-  assert.deepEqual(result, { v: 1, ts: 123000, receivedAt: 456000, chatJid: 'test-chat@invalid',
+  assert.deepEqual(result, { v: 2, ts: 123000, receivedAt: 456000, chatJid: 'test-chat@invalid',
     chatName: 'synthetic-chat', chatType: 'dm', fromMe: false, senderJid: 'test-chat@invalid',
     senderName: 'synthetic-chat', pushName: 'synthetic-push', body: 'synthetic-body',
     mediaType: null, messageId: 'test-id', syncType: 'notify' });
@@ -628,4 +629,66 @@ test('live/history pushnames and sender fields are harvested even on deduplicate
   assert.equal(cache.identity('synthetic-shared@lid').phone, '+synthetic-shared-phone');
   assert.equal(statSync(join(root, 'lid-map.json')).mode & 0o777, 0o600);
   assert.deepEqual(socket.outgoingCalls, []);
+});
+
+
+test('incoming images/documents/videos archive before append; history is awaited and outgoing media is skipped', async (t) => {
+  const { root, socket, service } = setup(t);
+  const download = t.mock.method(socket, 'downloadMedia', async () => (async function* () {
+    yield Buffer.from('synthetic-media');
+  })());
+  await service.start();
+  const messages = [
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-image' }, message: { imageMessage: { mimetype: 'image/jpeg' } } }),
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-document' }, message: { documentWithCaptionMessage: {
+      message: { documentMessage: { mimetype: 'application/pdf', caption: 'synthetic-caption' } },
+    } } }),
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-video' }, message: { videoMessage: { mimetype: 'video/mp4' } } }),
+  ];
+  socket.emit('messages.upsert', { type: 'notify', messages: messages.slice(0, 1) });
+  socket.emit('messaging-history.set', { contacts: [], chats: [], messages, isLatest: true });
+  socket.emit('messages.upsert', { type: 'notify', messages: [message({
+    key: { remoteJid: 'test-chat@invalid', id: 'synthetic-own-media', fromMe: true },
+    message: { imageMessage: { mimetype: 'image/jpeg' } },
+  })] });
+  await service.flush();
+  const records = new JsonlStore({ directory: root }).filter().records;
+  assert.equal(records.length, 4);
+  assert.equal(download.mock.callCount(), 3);
+  assert.deepEqual(records.map((entry) => entry.mediaPath), [
+    'media/1970-01/synthetic-image-jpg', 'media/1970-01/synthetic-document-pdf',
+    'media/1970-01/synthetic-video-mp4', undefined,
+  ]);
+  assert.deepEqual(records.map((entry) => entry.syncType), ['notify', 'append', 'append', 'notify']);
+  assert.equal(records[1]!.body, 'synthetic-caption');
+  for (const entry of records.slice(0, 3)) {
+    assert.equal(entry.v, 2);
+    assert.equal(readFileSync(join(root, entry.mediaPath!), 'utf8'), 'synthetic-media');
+  }
+  assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('media gate OFF skips downloads and keeps mediaType; failed and oversized downloads still append metadata', async (t) => {
+  for (const gate of [false, true]) {
+    const { root, socket, service, logs } = setup(t, { media_archival: gate });
+    const download = t.mock.method(socket, 'downloadMedia', async () => { throw new Error('synthetic-private-error'); });
+    await service.start();
+    socket.emit('messages.upsert', { type: 'notify', messages: [
+      message({ message: { imageMessage: { mimetype: 'image/jpeg' } } }),
+      message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-large' },
+        message: { videoMessage: { fileLength: 64 * 1024 * 1024 + 1 } } }),
+      message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-after-media' } }),
+    ] });
+    await service.flush();
+    const records = new JsonlStore({ directory: root }).filter().records;
+    assert.equal(records.length, 3);
+    assert.deepEqual(records.map((entry) => entry.mediaType), ['image', 'video', null]);
+    assert.ok(records.every((entry) => entry.mediaPath === undefined));
+    assert.equal(download.mock.callCount(), gate ? 1 : 0);
+    assert.equal(logs.filter((entry) => entry.event === 'media.archive.failed').length, gate ? 2 : 0);
+    assert.equal(JSON.stringify(logs).includes('synthetic-private-error'), false);
+    if (!gate) assert.equal(existsSync(join(root, 'media')), false);
+    else assert.deepEqual(readdirSync(join(root, 'media/1970-01')), []);
+    assert.deepEqual(socket.outgoingCalls, []);
+  }
 });

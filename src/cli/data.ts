@@ -63,7 +63,7 @@ export async function tail(store: JsonlStore, count: number, filters: Filters,
 }
 
 const columns = ['v', 'ts', 'receivedAt', 'chatJid', 'chatName', 'chatType', 'fromMe',
-  'senderJid', 'senderName', 'pushName', 'body', 'mediaType', 'messageId', 'syncType'] as const;
+  'senderJid', 'senderName', 'pushName', 'body', 'mediaType', 'messageId', 'syncType', 'mediaPath'] as const;
 function csv(value: unknown): string {
   const text = value == null ? '' : String(value);
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;

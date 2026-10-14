@@ -4,6 +4,7 @@ import { privateDirectory, readPrivateFile, replacePrivateFile } from '../daemon
 export const defaults = {
   read_receipts: false,
   presence: false,
+  media_archival: true,
   port: 7877,
   maxBytes: 10 * 1024 * 1024,
   keepRotations: 5,
@@ -17,7 +18,7 @@ export function configKey(key: string): ConfigKey {
 }
 
 function validate(key: ConfigKey, value: unknown): void {
-  if (key === 'read_receipts' || key === 'presence') {
+  if (key === 'read_receipts' || key === 'presence' || key === 'media_archival') {
     if (typeof value !== 'boolean') throw new Error(`${key} must be true or false.`);
   } else if (typeof value !== 'number' || !Number.isSafeInteger(value)
     || value < (key === 'keepRotations' ? 0 : 1) || (key === 'port' && value > 65535)) {
