@@ -9,7 +9,8 @@ import { SendError, validateRequest } from '../send/index.js';
 import { directSend } from '../send/direct.js';
 import { loadConfig, setConfig, configKey } from './config.js';
 import { commands, usage } from './help.js';
-import { foreground, lockPid, terminatePid } from './lifecycle.js';
+import { foreground, lockPid } from './lifecycle.js';
+import { ensureControlToken, readControlToken } from '../daemon/token.js';
 import type { DaemonFactory } from './lifecycle.js';
 import { auditEntries, exportRecords, tail } from './data.js';
 import { NameCache, normalizedJid } from '../daemon/cache.js';
@@ -29,7 +30,7 @@ const string = { type: 'string' } as const;
 const boolean = { type: 'boolean' } as const;
 const dates = { from: string, to: string };
 const options: Record<string, NonNullable<ParseArgsConfig['options']>> = {
-  start: {}, stop: {}, status: {}, pair: {}, config: {}, alias: {}, chats: {}, who: {}, open: {},
+  start: {}, stop: {}, status: {}, pair: {}, config: {}, token: {}, alias: {}, chats: {}, who: {}, open: {},
   send: { to: string, text: string, image: string, caption: string, document: string, direct: boolean },
   sends: { limit: string },
   search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean },
@@ -72,7 +73,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     const values = parsed.values as Record<string, string | boolean | undefined>;
     const str = (name: string): string | undefined => values[name] as string | undefined;
     const positionals = parsed.positionals;
-    if (command !== 'config' && command !== 'alias'
+    if (command !== 'config' && command !== 'alias' && command !== 'token'
       && positionals.length !== (command === 'search' || command === 'who' || command === 'open' ? 1 : 0)) {
       throw new Error('Unexpected or missing positional argument.');
     }
@@ -82,11 +83,16 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     }
     const config = loadConfig(directory);
     const request = async (path: string, body?: unknown): Promise<unknown> => {
+      const token = readControlToken(directory);
       let response: Response;
       try {
         response = await (dependencies.fetch ?? fetch)(`http://127.0.0.1:${config.port}${path}`, {
           method: path === '/status' ? 'GET' : 'POST',
-          ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } }),
+          headers: {
+            ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
+            ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           signal: AbortSignal.any([signal, AbortSignal.timeout(path === '/send' ? 60000 : 3000)]),
           redirect: 'error',
         });
@@ -95,6 +101,11 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       if (!response.ok) throw new SendError(response.status, result.error ?? 'Daemon request failed.');
       return result;
     };
+    if (command === 'token') {
+      if (positionals.length !== 1 || positionals[0] !== 'rotate') throw new Error('Use token rotate.');
+      ensureControlToken(directory, true);
+      print({ rotated: true }); return 0;
+    }
     if (command === 'config') {
       const [action, key, value] = positionals;
       if (action === 'get' && positionals.length <= 2) {
@@ -127,8 +138,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     }
     if (command === 'status') { print(await request('/status')); return 0; }
     if (command === 'stop') {
-      if (terminatePid(directory)) print({ stopping: true });
-      else print(await request('/stop'));
+      print(await request('/stop'));
       return 0;
     }
     if (command === 'send') {
@@ -268,7 +278,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     return count ? 0 : 3;
   } catch (error) {
     err(`${error instanceof Error ? error.message : 'Command failed.'}\n`);
-    if (error instanceof SendError) return error.status >= 500 && error.status < 504 ? 2 : 1;
+    if (error instanceof SendError) return error.status === 401 ? 4 : error.status >= 500 && error.status < 504 ? 2 : 1;
     return 1;
   } finally {
     process.removeListener('SIGINT', abort);

@@ -95,8 +95,10 @@ OFF, are loaded at startup, and operate only within an explicit send.
 
 The API binds exclusively to `127.0.0.1`, default port `7877`; no remote bind
 option exists. Routes are `GET /status`, `POST /stop`, and `POST /send`; other
-methods/paths return `404`. Requests must omit Origin and use the bound
-loopback Host. The API has no authentication and is accessible to local processes.
+methods/paths return `404` after the POST authentication gate. Requests must omit Origin and use the bound
+loopback Host. Every POST requires a private 256-bit bearer token; missing or
+invalid credentials return 401. Unauthenticated GET status returns only `running`.
+The token is read per request so atomic rotation revokes old credentials immediately.
 The send handler requires JSON and limits its body to 1 MiB.
 
 The data directory uses `0700`; store/auth/cache/config/audit files use `0600`.
@@ -107,7 +109,10 @@ The default store rotates before exceeding 10 MiB, retaining five archives
 plus the current file. The store itself does not deduplicate history, reconcile edits/deletes,
 or expire disappearing messages. Rotation deletes older files and is not a
 crash-atomic transaction. Message appends are not fsynced by default; audit
-appends always are. The audit has no automatic rotation.
+appends always are. The audit rotates at the same `maxBytes` threshold, keeping
+`audit_rotations` archives (default ten) plus the current file. Incomplete audit
+lines and rotation/write/sync failures block sending. `wallfly sends` streams
+all retained audit files in append order.
 
 Configuration is validated by the CLI, atomically replaced, and applied on
 restart. Query CLI commands read local retained files without a daemon.

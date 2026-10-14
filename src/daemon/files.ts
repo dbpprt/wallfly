@@ -12,7 +12,7 @@ export function privateDirectory(path: string): void {
 }
 
 export function readPrivateFile(path: string): string {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     if (!fstatSync(fd).isFile()) throw new Error('Expected a regular private file.');
     fchmodSync(fd, 0o600);

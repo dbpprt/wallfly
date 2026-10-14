@@ -15,11 +15,12 @@ protect against processes running as your user, root, or compromised backups.
 | `messages.jsonl` and numbered rotations | Schema-v2 text/captions (v1 remains readable), chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, optional live/history `syncType`, and optional relative `mediaPath`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
 | `media/<yyyy-mm>/<messageId>-<ext>` | Downloaded incoming images, documents, videos, audio, and stickers; UTC message month, directory `0700`, files `0600`, at most 64 MiB per file. No automatic rotation or expiry. |
 | `auth/` | Baileys linked-device credentials and encryption/session key material. Directory `0700`, files tightened to `0600` after writes. Treat as credentials. |
+| `auth/token` | Private 256-bit control API bearer token. Created on first start, reused until `wallfly token rotate`; rotation revokes the old token immediately. |
 | `contacts.json` | Schema-v3 names, self-declared pushnames/timestamps, group participant JIDs, LIDs, and ranks, plus operator-curated `aliases` entries with `name` and `manual: true`; atomically replaced, mode `0600`. Reads v1/v2 caches. Names in message records remain transport snapshots. |
 | `contacts.json.lock` | Empty, private lock held briefly during cache writes to preserve manual edits while the daemon runs; removed when the write completes. An interrupted writer can leave it behind; stop writers before removing a stale lock. |
 | `lid-map.json` | Schema-v1 observed LID→phone-JID pairs; atomically replaced. No automatic expiry. |
 | `config.json` | Receipt/presence and incoming-media gates, port, and rotation settings; atomically replaced by CLI configuration. |
-| `sends.jsonl` | Append-only send-attempt audit, described below. No automatic rotation. |
+| `sends.jsonl` and numbered rotations | Send-attempt audit, described below. Default: 10 MiB current file and ten retained rotations; older rotations are deleted. |
 | `wallfly.pid` | PID used to keep foreground and direct modes from sharing auth writers; removed on normal exit. |
 | `pairing.png` | Temporary pairing QR, removed on connection, disconnection, or stop. A crash may leave it behind. Terminal QR output can persist in terminal/service logs. |
 
@@ -86,12 +87,17 @@ Each record contains:
 Raw text, captions, attachment bytes, and media hashes are absent from this
 log. An attempt record does not prove delivery: later transport failures keep
 it, and timeouts can leave delivery uncertain. It has no delivery-result or
-receipt-key fields. `wallfly sends` reads the local log; successful CLI sends
+receipt-key fields. `wallfly sends` reads the retained local logs; successful CLI sends
 print the exact appended record. See [SEND.md](SEND.md).
 
 Destinations, paths, and hashes remain sensitive metadata. Hashes of predictable
 text can be guessed; hashing is not anonymization. The separate message archive
 may contain the plaintext of your sent messages when WhatsApp echoes them back.
+
+Audit retention uses `maxBytes` and `audit_rotations` (default ten archives plus
+the current file). Set `wallfly config set audit_rotations N` and restart; zero
+discards older files at rotation. Retention removes attempts permanently from
+these files; operator backups can retain them separately.
 
 ## What never leaves automatically
 
@@ -166,9 +172,12 @@ syncing the audit. No automatic or scheduled sends, incoming-message replies,
 or reactions are implemented. There are no automatic send retries.
 
 The API listens only on `127.0.0.1` and has no remote bind option. Origin headers
-and unexpected Host headers are rejected, but local processes can still use
-the unauthenticated status/stop/send API as the linked account. Do not proxy it
-to a network or assume loopback protects against hostile local software.
+and unexpected Host headers are rejected. All POST endpoints require the bearer
+token in `auth/token`; GET status exposes only whether the daemon is running
+without a valid token. The CLI supplies the token automatically. Processes
+running as your user or root can read it and act as the linked account. Do not
+proxy the API to a network or assume authentication isolates hostile software
+sharing your OS identity.
 
 ## Read receipts and presence: config-gated, default OFF
 

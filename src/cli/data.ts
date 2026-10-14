@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Cursor, Filters, MessageRecord } from '../store/index.js';
 import { JsonlStore } from '../store/index.js';
+import { auditRotationIndices } from '../send/audit.js';
 
 export function last<T>(items: Iterable<T>, count: number): T[] {
   if (count === 0) return [];
@@ -18,22 +19,30 @@ export function last<T>(items: Iterable<T>, count: number): T[] {
 }
 
 export async function auditEntries(directory: string, limit: number): Promise<unknown[]> {
-  const input = createReadStream(join(directory, 'sends.jsonl'), { encoding: 'utf8' });
-  // Keep a bounded ring while streaming, rather than loading the full audit log.
-  const lines = createInterface({ input, crlfDelay: Infinity });
   const records: unknown[] = [];
   let index = 0;
-  try {
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      const record: unknown = JSON.parse(line);
-      if (limit === 0) continue;
-      if (records.length < limit) records.push(record);
-      else { records[index] = record; index = (index + 1) % limit; }
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  } finally { lines.close(); input.destroy(); }
+  let indices: number[];
+  try { indices = auditRotationIndices(directory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  for (const name of [...indices.map((n) => `sends.jsonl.${n}`), 'sends.jsonl']) {
+    const input = createReadStream(join(directory, name), { encoding: 'utf8' });
+    // Keep one bounded ring across all retained files, in append order.
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        const record: unknown = JSON.parse(line);
+        if (limit === 0) continue;
+        if (records.length < limit) records.push(record);
+        else { records[index] = record; index = (index + 1) % limit; }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    } finally { lines.close(); input.destroy(); }
+  }
   return [...records.slice(index), ...records.slice(0, index)];
 }
 

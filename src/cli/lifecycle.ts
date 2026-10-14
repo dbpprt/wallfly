@@ -71,14 +71,3 @@ export async function foreground(options: DaemonOptions & { directory: string },
     try { await (stopping ?? service?.stop()); } finally { unlock(); }
   }
 }
-
-export function terminatePid(directory: string): boolean {
-  const pid = readPid(directory);
-  if (pid === undefined) return false;
-  try { process.kill(pid, 'SIGTERM'); return true; }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-    removeFile(join(directory, 'wallfly.pid'));
-    return false;
-  }
-}

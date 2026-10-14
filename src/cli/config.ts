@@ -8,6 +8,7 @@ export const defaults = {
   port: 7877,
   maxBytes: 10 * 1024 * 1024,
   keepRotations: 5,
+  audit_rotations: 10,
 };
 export type Config = typeof defaults;
 export type ConfigKey = keyof Config;
@@ -21,7 +22,7 @@ function validate(key: ConfigKey, value: unknown): void {
   if (key === 'read_receipts' || key === 'presence' || key === 'media_archival') {
     if (typeof value !== 'boolean') throw new Error(`${key} must be true or false.`);
   } else if (typeof value !== 'number' || !Number.isSafeInteger(value)
-    || value < (key === 'keepRotations' ? 0 : 1) || (key === 'port' && value > 65535)) {
+    || value < (key === 'keepRotations' || key === 'audit_rotations' ? 0 : 1) || (key === 'port' && value > 65535)) {
     throw new Error(`Invalid integer for ${key}.`);
   }
 }

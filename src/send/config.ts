@@ -19,5 +19,7 @@ export function loadSendConfig(directory = join(homedir(), '.wallfly')): SendOpt
   return {
     ...(fields.read_receipts === undefined ? {} : { read_receipts: fields.read_receipts }),
     ...(fields.presence === undefined ? {} : { presence: fields.presence }),
+    ...(fields.maxBytes === undefined ? {} : { maxBytes: fields.maxBytes }),
+    ...(fields.audit_rotations === undefined ? {} : { audit_rotations: fields.audit_rotations }),
   };
 }
