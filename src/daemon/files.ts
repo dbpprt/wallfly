@@ -33,6 +33,26 @@ export function replacePrivateFile(path: string, data: string | Buffer): void {
   }
 }
 
+/** Serialize local read/modify/replace operations across CLI and daemon processes. */
+export function withPrivateFileLock<T>(path: string, action: () => T): T {
+  const lock = `${path}.lock`;
+  const deadline = Date.now() + 2000;
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  let fd: number;
+  for (;;) {
+    try { fd = openSync(lock, 'wx', 0o600); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`Cache busy; retry. If a writer crashed, stop wallfly and remove ${lock}.`, { cause: error });
+      }
+      Atomics.wait(wait, 0, 0, 10);
+    }
+  }
+  try { return action(); }
+  finally { closeSync(fd); removeFile(lock); }
+}
+
 export function removeFile(path: string): void {
   try {
     unlinkSync(path);

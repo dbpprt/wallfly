@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -110,5 +111,95 @@ test('v1 names survive migration and unrelated/protocol message identities canno
   assert.equal(cache.get('synthetic-group@g.us'), 'synthetic-old');
   cache.message(message('synthetic-status', 50, { remoteJid: 'status@broadcast' }));
   assert.equal(new NameCache(root).identity(lid).pushname, 'synthetic-group-sender');
-  assert.equal(JSON.parse(readFileSync(cache.path, 'utf8')).v, 2);
+  assert.equal(JSON.parse(readFileSync(cache.path, 'utf8')).v, 3);
+});
+
+test('manual aliases persist privately, override transport labels, and follow observed LID pairs', (t) => {
+  const root = directory(t);
+  const cache = new NameCache(root);
+  assert.deepEqual(cache.display(lid), { name: lid });
+  cache.contacts([{ id: lid, name: 'synthetic-derived' }]);
+  assert.deepEqual(cache.display(lid), { name: 'synthetic-derived' });
+  cache.message(message('synthetic-push', 10));
+  assert.deepEqual(cache.display(lid), { name: 'synthetic-push' });
+  cache.setAlias(lid, 'Synthetic Manual Name');
+  assert.deepEqual(new NameCache(root).display(pn), { name: 'Synthetic Manual Name', manual: true });
+  assert.deepEqual(cache.identity(pn).manual, true);
+  assert.deepEqual(cache.listAliases(), [{ jid: lid, name: 'Synthetic Manual Name', manual: true }]);
+  const data = JSON.parse(readFileSync(cache.path, 'utf8'));
+  assert.equal(data.v, 3);
+  assert.deepEqual(data.aliases, { [lid]: { name: 'Synthetic Manual Name', manual: true } });
+  assert.equal(statSync(cache.path).mode & 0o777, 0o600);
+  assert.equal(statSync(root).mode & 0o777, 0o700);
+  assert.equal(cache.removeAlias(lid), true);
+  assert.equal(cache.removeAlias(lid), false);
+  assert.deepEqual(new NameCache(root).listAliases(), []);
+  assert.deepEqual(cache.display(lid), { name: 'synthetic-push' });
+});
+
+test('daemon cache sees external alias edits and preserves them on subsequent transport writes', (t) => {
+  const root = directory(t);
+  const daemon = new NameCache(root);
+  daemon.groups([{ id: 'synthetic-group@g.us', subject: 'synthetic-subject' }]);
+  new NameCache(root).setAlias(lid, 'synthetic-manual');
+  assert.equal(daemon.get(lid), 'synthetic-manual');
+  daemon.message(message('synthetic-live', 20));
+  daemon.contacts([{ id: lid, name: 'synthetic-contact' }]);
+  assert.equal(new NameCache(root).get(lid), 'synthetic-manual');
+  new NameCache(root).removeAlias(lid);
+  daemon.groups([{ id: 'synthetic-group@g.us', subject: 'synthetic-updated-subject' }]);
+  assert.equal(new NameCache(root).get(lid), 'synthetic-live');
+  assert.deepEqual(new NameCache(root).listAliases(), []);
+  // A stale CLI instance must preserve facts written after it was constructed.
+  const cli = new NameCache(root);
+  daemon.message(message('synthetic-newest', 30));
+  cli.setAlias(lid, 'synthetic-new-manual');
+  assert.equal(new NameCache(root).identity(lid).pushname, 'synthetic-newest');
+});
+
+test('v2 caches migrate without losing names, pushnames or participants; malformed aliases fail closed', (t) => {
+  const root = directory(t);
+  const path = join(root, 'contacts.json');
+  const legacy = { v: 2, names: { [lid]: 'synthetic-derived' },
+    pushnames: { [lid]: { name: 'synthetic-push', ts: 10 } }, participants: {} };
+  writeFileSync(path, JSON.stringify(legacy));
+  new NameCache(root).setAlias(lid, 'synthetic-manual');
+  const saved = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(saved.v, 3);
+  for (const key of ['names', 'pushnames', 'participants'] as const) assert.deepEqual(saved[key], legacy[key]);
+  for (const aliases of [null, { [lid]: 'synthetic' }, { [lid]: { name: '', manual: true } },
+    { [lid]: { name: 'synthetic', manual: false } }, { invalid: { name: 'synthetic', manual: true } }]) {
+    writeFileSync(path, JSON.stringify({ ...saved, aliases }));
+    assert.throws(() => new NameCache(root), /manual alias/i);
+  }
+});
+
+test('concurrent alias processes and daemon writes preserve every manual entry and transport fact', async (t) => {
+  const root = directory(t);
+  const module = new URL('../src/daemon/cache.js', import.meta.url).href;
+  const program = `
+    import { NameCache } from ${JSON.stringify(module)};
+    const [root, worker] = process.argv.slice(1);
+    const cache = new NameCache(root);
+    for (let i = 0; i < 20; i++) {
+      if (worker === 'daemon') {
+        cache.message({ key: { remoteJid: 'synthetic-person@lid' },
+          pushName: 'synthetic-push-' + i, messageTimestamp: i });
+      } else {
+        cache.setAlias('synthetic-' + worker + '-' + i + '@lid', 'synthetic-manual-' + i);
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+    }
+  `;
+  await Promise.all(['daemon', 'a', 'b'].map((worker) => new Promise<void>((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', program, root, worker], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    child.once('error', reject);
+    child.once('exit', (code) => { if (code === 0) resolve(); else reject(new Error(stderr || `Worker exited ${code}`)); });
+  })));
+  const cache = new NameCache(root);
+  assert.equal(cache.listAliases().length, 40);
+  assert.equal(cache.identity(lid).pushname, 'synthetic-push-19');
+  assert.equal(statSync(cache.path).mode & 0o777, 0o600);
 });

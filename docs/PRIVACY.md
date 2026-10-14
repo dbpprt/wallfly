@@ -14,7 +14,8 @@ protect against processes running as your user, root, or compromised backups.
 | --- | --- |
 | `messages.jsonl` and numbered rotations | Schema-v1 text/captions, chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, and optional live/history `syncType`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
 | `auth/` | Baileys linked-device credentials and encryption/session key material. Directory `0700`, files tightened to `0600` after writes. Treat as credentials. |
-| `contacts.json` | Schema-v2 names, self-declared pushnames/timestamps, and group participant JIDs, LIDs, and ranks; atomically replaced. Reads v1 caches. Names in message records are snapshots. |
+| `contacts.json` | Schema-v3 names, self-declared pushnames/timestamps, group participant JIDs, LIDs, and ranks, plus operator-curated `aliases` entries with `name` and `manual: true`; atomically replaced, mode `0600`. Reads v1/v2 caches. Names in message records remain transport snapshots. |
+| `contacts.json.lock` | Empty, private lock held briefly during cache writes to preserve manual edits while the daemon runs; removed when the write completes. An interrupted writer can leave it behind; stop writers before removing a stale lock. |
 | `lid-map.json` | Schema-v1 observed LID→phone-JID pairs; atomically replaced. No automatic expiry. |
 | `config.json` | Receipt/presence gates, port, and rotation settings; atomically replaced by CLI configuration. |
 | `sends.jsonl` | Append-only send-attempt audit, described below. No automatic rotation. |
@@ -47,6 +48,21 @@ failed refreshes can leave stale membership. Pushnames are labels, not verified
 identity. These caches contain sensitive relationship and phone metadata, remain
 local, and have no automatic expiry; unlinking does not remove them. See the
 [README identity guide](../README.md#identity-resolution).
+
+The operator can add a local, curated identity layer when a LID remains unnamed:
+
+```sh
+wallfly alias set synthetic-person@lid "Synthetic Display Name"
+```
+
+Manual aliases override pushnames and cached contact/group names in displays and
+carry `"manual": true`. They are operator labels, not verified WhatsApp identity,
+and disclose no previously hidden phone number. They stay in `contacts.json`,
+survive daemon restarts, and can be inspected with `wallfly alias list` or deleted
+with `wallfly alias remove synthetic-person@lid`. Alias commands work offline and
+never send the label to WhatsApp. Message records and exports keep their stored
+transport labels; manually chosen labels appear in CLI display output and any
+operator backups of the cache.
 
 ## Send audit log
 

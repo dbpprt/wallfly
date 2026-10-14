@@ -14,6 +14,7 @@ import type { ListenerEvent } from '../src/daemon/socket.js';
 import { printPairingQr } from '../src/daemon/pair.js';
 import { JsonlStore } from '../src/store/index.js';
 import { SendService } from '../src/send/index.js';
+import { runCli } from '../src/cli/index.js';
 
 // All identifiers, text, display names, and pairing input are synthetic markers.
 class FakeSocket implements ListenerSocket {
@@ -47,6 +48,37 @@ function directory(t: TestContext): string {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   return root;
 }
+
+test('operator alias survives daemon restart and transport refreshes, while archive labels stay removable', async (t) => {
+  const { root, socket, service } = setup(t);
+  const jid = 'synthetic-person@lid';
+  await service.start();
+  const cli = (args: string[]) => runCli(args, { directory: root, stdout: () => {}, stderr: () => {} });
+  assert.equal(await cli(['alias', 'set', jid, 'Synthetic Manual Name']), 0);
+  socket.emit('contacts.upsert', [{ id: jid, name: 'synthetic-contact' }]);
+  await eventually(() => service.cache.identity(jid).name === 'Synthetic Manual Name');
+  assert.equal(service.cache.identity(jid).manual, true);
+  const sample = message({ key: { remoteJid: jid, id: 'synthetic-aliased-message' } });
+  socket.emit('messages.upsert', { type: 'notify', messages: [sample] });
+  await eventually(() => service.status().recordedMessages === 1);
+  const archived = new JsonlStore({ directory: root }).filter().records[0]!;
+  assert.equal(archived.chatName, 'synthetic-push');
+  assert.equal(archived.senderName, 'synthetic-push');
+  await service.stop();
+  const restartedSocket = new FakeSocket();
+  const restarted = new DaemonService({ directory: root, port: 0 }, {
+    socketFactory: async () => restartedSocket, pairingOutput: async () => {}, log: () => {},
+  });
+  t.after(() => restarted.stop());
+  await restarted.start();
+  assert.equal(restarted.cache.get(jid), 'Synthetic Manual Name');
+  assert.equal(restarted.cache.identity(jid).manual, true);
+  assert.equal(await cli(['alias', 'remove', jid]), 0);
+  restartedSocket.emit('contacts.update', [{ id: jid, name: 'synthetic-after-restart' }]);
+  await eventually(() => restarted.cache.get(jid) === 'synthetic-push');
+  assert.equal(restarted.cache.identity(jid).manual, undefined);
+  assert.deepEqual(new NameCache(root).listAliases(), []);
+});
 
 function message(overrides: Partial<WAMessage> = {}): WAMessage {
   return { key: { remoteJid: 'test-chat@invalid', id: 'test-id', fromMe: false },
@@ -200,7 +232,7 @@ test('daemon persists event and history mapping, contact/group updates, and cred
   const records = new JsonlStore({ directory: root }).filter().records;
   assert.equal(records.length, 3);
   assert.deepEqual(records.map((record) => record.syncType), ['notify', 'append', 'append']);
-  assert.equal(records[0]?.chatName, 'synthetic-new');
+  assert.equal(records[0]?.chatName, 'synthetic-push');
   assert.equal(records[1]?.chatName, 'synthetic-new-group');
   assert.equal(records[2]?.senderName, 'synthetic-push');
   assert.equal(service.cache.get('test-history-group@g.us'), 'synthetic-history-group');

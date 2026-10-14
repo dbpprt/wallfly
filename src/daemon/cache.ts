@@ -1,7 +1,7 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Contact, GroupMetadata, WAMessage } from '@whiskeysockets/baileys';
-import { privateDirectory, readPrivateFile, replacePrivateFile } from './files.js';
-import { LidMap, normalizedJid } from './identity.js';
+import { privateDirectory, readPrivateFile, replacePrivateFile, withPrivateFileLock } from './files.js';
+import { LidMap, normalizedJid, validJid } from './identity.js';
 
 export { normalizedJid } from './identity.js';
 export interface CachedParticipant {
@@ -10,15 +10,18 @@ export interface CachedParticipant {
   rank: 'member' | 'admin' | 'superadmin';
 }
 interface Pushname { name: string; ts: number }
+export interface ManualAlias { jid: string; name: string; manual: true }
+export interface DisplayName { name: string; manual?: true }
 export interface Identity {
   jid: string;
   aliases: string[];
   name: string | null;
+  manual?: true;
   phone: string | null;
   phoneJid: string | null;
   pushname: string | null;
   pushnameTs: number | null;
-  groups: { jid: string; name: string | null; rank: CachedParticipant['rank'] }[];
+  groups: { jid: string; name: string | null; manual?: true; rank: CachedParticipant['rank'] }[];
 }
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -31,6 +34,7 @@ export class NameCache {
   private readonly names = new Map<string, string>();
   private readonly pushnames = new Map<string, Pushname>();
   private readonly participants = new Map<string, CachedParticipant[]>();
+  private readonly manualAliases = new Map<string, string>();
 
   constructor(directory: string) {
     privateDirectory(directory);
@@ -43,13 +47,14 @@ export class NameCache {
       throw error;
     }
     const data: unknown = JSON.parse(raw);
-    if (!object(data) || (data.v !== 1 && data.v !== 2) || !object(data.names)) {
+    if (!object(data) || (data.v !== 1 && data.v !== 2 && data.v !== 3) || !object(data.names)) {
       throw new Error('Invalid name cache.');
     }
     for (const [jid, name] of Object.entries(data.names)) {
       if (!jid || typeof name !== 'string') throw new Error('Invalid name cache entry.');
       this.names.set(normalizedJid(jid), name);
     }
+    this.readAliases(data);
     if (data.v === 1) return;
     if (!object(data.pushnames) || !object(data.participants)) throw new Error('Invalid identity cache.');
     for (const [jid, entry] of Object.entries(data.pushnames)) {
@@ -71,6 +76,75 @@ export class NameCache {
     }
   }
 
+  private readAliases(data: Record<string, unknown>): void {
+    this.manualAliases.clear();
+    if (data.v !== 3) return;
+    if (!object(data.aliases)) throw new Error('Invalid manual aliases.');
+    for (const [jid, entry] of Object.entries(data.aliases)) {
+      if (!validJid(jid) || !object(entry) || entry.manual !== true || typeof entry.name !== 'string'
+        || !entry.name.trim() || entry.name.includes('\0')) throw new Error('Invalid manual alias.');
+      this.manualAliases.set(jid, entry.name);
+    }
+  }
+
+  // Manual names have a separate owner from transport facts. Read the current
+  // section on use and under the write lock so a running daemon never loses edits.
+  private refreshAliases(): void {
+    let raw: string;
+    try { raw = readPrivateFile(this.path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      this.manualAliases.clear(); return;
+    }
+    const data: unknown = JSON.parse(raw);
+    if (!object(data) || (data.v !== 1 && data.v !== 2 && data.v !== 3)) throw new Error('Invalid name cache.');
+    this.readAliases(data);
+  }
+
+  listAliases(): ManualAlias[] {
+    this.refreshAliases();
+    return [...this.manualAliases].sort(([a], [b]) => a.localeCompare(b))
+      .map(([jid, name]) => ({ jid, name, manual: true }));
+  }
+
+  setAlias(jid: string, name: string): ManualAlias {
+    if (!validJid(jid)) throw new Error('Invalid alias JID.');
+    if (!name.trim() || name.includes('\0')) throw new Error('Alias name must be nonempty and contain no NUL.');
+    this.editAliases((cache) => { cache.manualAliases.set(jid, name); });
+    return { jid, name, manual: true };
+  }
+
+  removeAlias(jid: string): boolean {
+    if (!validJid(jid)) throw new Error('Invalid alias JID.');
+    return this.editAliases((cache) => cache.manualAliases.delete(jid));
+  }
+
+  private editAliases<T>(edit: (cache: NameCache) => T): T {
+    return withPrivateFileLock(this.path, () => {
+      // CLI mutations preserve the latest daemon facts as well as other aliases.
+      const latest = new NameCache(dirname(this.path));
+      const result = edit(latest);
+      latest.write();
+      this.refreshAliases();
+      return result;
+    });
+  }
+
+  private manualName(jid: string): string | null {
+    this.refreshAliases();
+    for (const id of this.lidMap.aliases(jid)) {
+      const name = this.manualAliases.get(id);
+      if (name) return name;
+    }
+    return null;
+  }
+
+  display(jid: string, archivedPushname: string | null = null, archivedName: string | null = null): DisplayName {
+    const manual = this.manualName(jid);
+    return { name: manual ?? this.pushname(jid)?.name ?? archivedPushname ?? this.derivedName(jid)
+      ?? archivedName ?? jid, ...(manual === null ? {} : { manual: true }) };
+  }
+
   private pushname(jid: string): Pushname | null {
     let latest: Pushname | null = null;
     for (const alias of this.lidMap.aliases(jid)) {
@@ -81,11 +155,20 @@ export class NameCache {
   }
 
   get(jid: string): string | null {
+    return this.manualName(jid) ?? this.observedName(jid);
+  }
+
+  /** Archive transport labels only; removable manual names stay in the cache. */
+  observedName(jid: string): string | null {
+    return this.pushname(jid)?.name ?? this.derivedName(jid);
+  }
+
+  private derivedName(jid: string): string | null {
     for (const alias of this.lidMap.aliases(jid)) {
       const name = this.names.get(alias);
       if (name) return name;
     }
-    return this.pushname(jid)?.name ?? null;
+    return null;
   }
 
   identity(jid: string): Identity {
@@ -96,9 +179,10 @@ export class NameCache {
     const groups: Identity['groups'] = [];
     for (const [group, members] of this.participants) {
       const member = members.find((entry) => aliases.includes(entry.jid) || (entry.lid !== null && aliases.includes(entry.lid)));
-      if (member) groups.push({ jid: group, name: this.get(group), rank: member.rank });
+      if (member) groups.push({ jid: group, ...this.display(group), rank: member.rank });
     }
-    return { jid: id, aliases, name: this.get(id), phoneJid,
+    const display = this.display(id);
+    return { jid: id, aliases, name: this.get(id), ...(display.manual ? { manual: true } : {}), phoneJid,
       phone: phoneJid ? `+${phoneJid.slice(0, -15)}` : null,
       pushname: pushname?.name ?? null, pushnameTs: pushname?.ts ?? null, groups };
   }
@@ -172,8 +256,13 @@ export class NameCache {
   }
 
   private save(): void {
-    const data = JSON.stringify({ v: 2, names: Object.fromEntries(this.names),
-      pushnames: Object.fromEntries(this.pushnames), participants: Object.fromEntries(this.participants) }) + '\n';
+    withPrivateFileLock(this.path, () => { this.refreshAliases(); this.write(); });
+  }
+
+  private write(): void {
+    const data = JSON.stringify({ v: 3, names: Object.fromEntries(this.names),
+      pushnames: Object.fromEntries(this.pushnames), participants: Object.fromEntries(this.participants),
+      aliases: Object.fromEntries([...this.manualAliases].map(([jid, name]) => [jid, { name, manual: true }])) }) + '\n';
     // Avoid rewriting identical contact/group replays.
     try { if (readPrivateFile(this.path) === data) return; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
