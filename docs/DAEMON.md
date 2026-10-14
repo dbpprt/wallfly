@@ -61,7 +61,7 @@ waves, which may arrive over minutes to hours. Each append wave, including
 stderr. The count includes only successful new appends, can be zero, and reveals
 no message content or identifiers.
 
-`messages.upsert` records are mapped into the store's schema v1 and appended
+`messages.upsert` records are mapped into the store's schema v2 and appended
 with `syncType: "notify"` for live events or `"append"` for history events.
 `messaging-history.set` also records history as `"append"`. Old v1 records
 without this optional field remain valid. Message timestamps are converted
@@ -72,7 +72,8 @@ a participant identifier; own messages need the linked account identifier.
 
 Text, extended text, ephemeral/view-once wrappers, and image/video/document
 captions are mapped. Audio and sticker messages retain their media kind.
-Attachment bytes are never downloaded by the application. Other recognized
+Received attachment bytes are downloaded when `media_archival` is enabled
+(default ON), capped at 64 MiB. Successful downloads add relative `mediaPath`. Other recognized
 content kinds can have an empty body. Successfully recorded message IDs are
 deduplicated in memory for the daemon session, including reconnects. The set
 grows with the session's unique messages and is lost on process restart, so
@@ -124,3 +125,16 @@ Transport, pairing output, store, and logger dependencies can be injected for
 offline embedding and tests. The socket interface exposes events, account
 identity, credential persistence,
 connection close, and an opaque outgoing port consumed only by `src/send/`.
+
+
+## Incoming media
+
+`media_archival` defaults ON. Baileys `downloadMediaMessage` streams received
+attachments into private `~/.wallfly/media/<yyyy-mm>/<messageId>-<ext>` files,
+with a 64 MiB cap and no automatic reupload requests. New v2 message records
+include the relative `mediaPath` after a successful download. The archive still
+reads v1 records. Failures or a disabled gate keep media metadata without a path.
+Set `wallfly config set media_archival false` and restart to stop downloads.
+Media files count toward disk usage and do not expire with JSONL rotations.
+`wallfly open <messageId>` prints the local path without executing it.
+See [PRIVACY.md](PRIVACY.md) for retention and local-storage details.

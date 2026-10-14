@@ -6,7 +6,7 @@ sends. It runs on Node.js >=20 with ESM and no application framework.
 
 | Boundary | Shipped responsibility |
 | --- | --- |
-| `src/daemon/` | Lazy Baileys socket factory, incoming event mapping, reconnect, terminal/PNG pairing, persisted identity caches, and loopback status/stop/send routing. |
+| `src/daemon/` | Lazy Baileys socket factory, incoming event mapping/media archival, reconnect, terminal/PNG pairing, persisted identity caches, and loopback status/stop/send routing. |
 | `src/store/` | Synchronous JSONL append/read, filters, tail, cursors, validation, and size rotation. No runtime dependencies. |
 | `src/send/` | Baileys message/read/presence adapter, shared audited send service, local media loading, HTTP input validation, config gates, and one-shot direct sends. |
 | `src/cli/` | Node `util.parseArgs` parsing/help, configuration, exclusive pidfile lifecycle, local queries/exports, and explicit HTTP/direct send dispatch. |
@@ -48,8 +48,12 @@ Tests can inject `SocketOptions.version` to skip discovery entirely.
 Incoming handlers run serially so name updates precede subsequent appends.
 Live upserts use `syncType: "notify"`; history uses `"append"`. Protocol-only
 messages and status broadcasts are skipped. Text/captions and metadata are
-mapped; attachment bytes are not downloaded. Individual append failures are
-logged by category and not retried. The rest of the batch continues. Name cache
+mapped into schema v2. With `media_archival` ON (default), received media is
+streamed via Baileys `downloadMediaMessage` to private files, capped at 64 MiB
+before publication, and referenced by relative `mediaPath`. Declared oversized
+media is rejected before downloading. Archival failures retain metadata and
+log only `media.archive.failed`. Media files do not rotate with JSONL.
+Individual append failures are logged by category and not retried. The rest of the batch continues. Name cache
 updates atomically replace schema-v2 `contacts.json` (v1 remains readable); names
 in old records stay snapshots. Pushnames and message-key LID/phone pairs are
 harvested before deduplication, including from protocol-only messages. Saved auth
@@ -96,8 +100,8 @@ loopback Host. The API has no authentication and is accessible to local processe
 The send handler requires JSON and limits its body to 1 MiB.
 
 The data directory uses `0700`; store/auth/cache/config/audit files use `0600`.
-The JSONL message schema is v1 with optional `syncType`; old v1 records remain
-readable. Readers skip and count corrupt records. Cursors identify a file and
+The JSONL message schema is v2 with optional `syncType` and `mediaPath`; old v1
+records remain readable. Readers skip and count corrupt records. Cursors identify a file and
 byte offset and survive rotation while retained. Retention can expire a cursor.
 The default store rotates before exceeding 10 MiB, retaining five archives
 plus the current file. The store itself does not deduplicate history, reconcile edits/deletes,
@@ -107,7 +111,9 @@ appends always are. The audit has no automatic rotation.
 
 Configuration is validated by the CLI, atomically replaced, and applied on
 restart. Query CLI commands read local retained files without a daemon.
-Exports are private JSON/CSV files; an existing destination is refused.
+`wallfly open MESSAGE_ID` prints a validated local attachment path.
+Exports include media references and are private JSON/CSV files; an existing
+destination is refused.
 
 ## Build and release
 

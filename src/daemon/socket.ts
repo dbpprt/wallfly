@@ -1,5 +1,5 @@
 import { dirname } from 'node:path';
-import type { BaileysEventMap, GroupMetadata, WAVersion } from '@whiskeysockets/baileys';
+import type { BaileysEventMap, GroupMetadata, WAMessage, WAVersion } from '@whiskeysockets/baileys';
 import { privateDirectory, secureAuthFiles } from './files.js';
 import { LidMap, loadAuthMappings, observeAuthMappings } from './identity.js';
 import { bindSendTransport } from '../send/index.js';
@@ -17,6 +17,7 @@ export interface ListenerSocket {
   };
   readonly user: { id: string } | undefined;
   readonly outgoing: SendTransport;
+  downloadMedia?(message: WAMessage): Promise<AsyncIterable<Uint8Array>>;
   groupMetadata?(jid: string): Promise<GroupMetadata>;
   groupFetchAllParticipating?(): Promise<Record<string, GroupMetadata>>;
   saveCredentials(): Promise<void>;
@@ -34,7 +35,7 @@ export interface SocketOptions {
 export type SocketFactory = (options: SocketOptions) => Promise<ListenerSocket>;
 
 type BaileysDependencies = Pick<typeof import('@whiskeysockets/baileys'),
-  'makeWASocket' | 'useMultiFileAuthState' | 'fetchLatestBaileysVersion' | 'DEFAULT_CONNECTION_CONFIG'>;
+  'makeWASocket' | 'useMultiFileAuthState' | 'fetchLatestBaileysVersion' | 'DEFAULT_CONNECTION_CONFIG' | 'downloadMediaMessage'>;
 
 let cachedVersion: WAVersion | undefined;
 let pendingVersion: Promise<WAVersion> | undefined;
@@ -99,6 +100,8 @@ export async function createBaileysSocket(options: SocketOptions,
     generateHighQualityLinkPreview: false });
   return {
     ev: socket.ev,
+    // No reuploadRequest: expired media must not trigger an automatic outgoing request.
+    downloadMedia: (message) => baileys.downloadMediaMessage(message, 'stream', { options: { timeout: 30000 } }),
     outgoing: bindSendTransport(socket),
     get user() { return socket.user; },
     groupMetadata: (jid) => socket.groupMetadata(jid),

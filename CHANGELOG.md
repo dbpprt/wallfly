@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Archive incoming media locally by default, with a 64 MiB cap, private files,
+  and the `media_archival` configuration gate. New schema-v2 records include
+  optional `mediaPath`; readers retain v1 compatibility.
+- Surface attachment paths in search/exports and add `wallfly open MESSAGE_ID`
+  to print a local path without executing it.
+
 ## [0.1.0] - 2026-10-14
 
 ### Added

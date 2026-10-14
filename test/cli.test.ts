@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { EventEmitter, once } from 'node:events';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
+import { archiveMedia } from '../src/daemon/media.js';
 import { runCli } from '../src/cli/index.js';
 import type { CliDependencies } from '../src/cli/index.js';
 import { commands } from '../src/cli/help.js';
@@ -164,9 +165,13 @@ test('chats aggregate recorded messages; empty reads and missing audit logs exit
   for (const command of ['chats', 'tail', 'sends']) assert.equal((await empty.run([command])).code, 3);
 });
 
-test('config persists all settings privately, validates types/ranges and defaults gates OFF', async (t) => {
+test('config persists all settings privately, validates types/ranges and defaults send gates OFF/media ON', async (t) => {
   const { directory, run } = setup(t, false);
   assert.equal((await run(['config', 'get', 'presence'])).stdout, 'false\n');
+  assert.equal((await run(['config', 'get', 'media_archival'])).stdout, 'true\n');
+  assert.equal((await run(['config', 'set', 'media_archival', 'false'])).code, 0);
+  assert.equal((await run(['config', 'get', 'media_archival'])).stdout, 'false\n');
+  assert.equal((await run(['config', 'set', 'media_archival', '1'])).code, 1);
   for (const [key, value] of [['read_receipts', 'true'], ['presence', 'true'], ['port', '8001'], ['maxBytes', '1000'], ['keepRotations', '0']]) {
     assert.equal((await run(['config', 'set', key!, value!])).code, 0);
     assert.equal((await run(['config', 'get', key!])).stdout.trim(), value);
@@ -540,4 +545,46 @@ test('chats, who, search and tail prefer aliases and mark manual chat/sender lab
   const exported = join(directory, 'synthetic-export.json');
   assert.equal((await run(['export', '--format', 'json', '--out', exported])).code, 0);
   assert.deepEqual(JSON.parse(readFileSync(exported, 'utf8')), [dm, groupRecord]);
+});
+
+
+test('search/export surface mediaPath and open prints only an existing safe local path', async (t) => {
+  const { directory, records, store, run } = setup(t, false);
+  const record = { ...records[0]!, v: 2 as const, mediaType: 'image' };
+  const mediaPath = await archiveMedia(directory, { key: {}, message: { imageMessage: { mimetype: 'image/jpeg' } } },
+    record, async () => (async function* () { yield Buffer.from('synthetic-media'); })());
+  store.append({ ...record, mediaPath });
+  const path = join(directory, mediaPath);
+  const readable = await run(['search', 'synthetic']);
+  assert.equal(readable.code, 0);
+  assert.ok(readable.stdout.includes(`mediaPath="${mediaPath}"`));
+  const json = await run(['search', 'synthetic', '--json']);
+  assert.equal((JSON.parse(json.stdout) as MessageRecord[])[0]!.mediaPath, mediaPath);
+  const exported = join(directory, 'synthetic-media.json');
+  const csv = join(directory, 'synthetic-media.csv');
+  assert.equal((await run(['export', '--format', 'json', '--out', exported])).code, 0);
+  assert.equal((JSON.parse(readFileSync(exported, 'utf8')) as MessageRecord[])[0]!.mediaPath, mediaPath);
+  assert.equal((await run(['export', '--format', 'csv', '--out', csv])).code, 0);
+  const content = readFileSync(csv, 'utf8');
+  assert.ok(content.split('\r\n')[0]!.endsWith('mediaPath'));
+  assert.ok(content.includes(mediaPath));
+  assert.deepEqual(await run(['open', record.messageId]), { code: 0, stdout: path + '\n', stderr: '' });
+  assert.equal((await run(['open', 'synthetic-absent'])).code, 3);
+  assert.equal((await run(['open'])).code, 1);
+  assert.equal((await run(['open', record.messageId, 'extra'])).code, 1);
+  rmSync(path);
+  const missing = await run(['open', record.messageId]);
+  assert.equal(missing.code, 1);
+  assert.equal(missing.stdout, '');
+  symlinkSync(exported, path);
+  assert.equal((await run(['open', record.messageId])).code, 1);
+});
+
+test('open reports no archived media for legacy/text or gate-disabled records', async (t) => {
+  const { run, records, store } = setup(t);
+  assert.equal((await run(['open', records[0]!.messageId])).code, 3);
+  store.append({ ...records[0]!, v: 2, messageId: 'synthetic-unarchived', mediaType: 'video' });
+  const result = await run(['open', 'synthetic-unarchived']);
+  assert.equal(result.code, 3);
+  assert.equal(result.stdout, '');
 });

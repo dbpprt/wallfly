@@ -14,6 +14,7 @@ import type { DaemonFactory } from './lifecycle.js';
 import { auditEntries, exportRecords, tail } from './data.js';
 import { NameCache, normalizedJid } from '../daemon/cache.js';
 import { displayRecord } from './identity.js';
+import { localMediaPath } from '../daemon/media.js';
 
 export interface CliDependencies {
   directory?: string;
@@ -28,7 +29,7 @@ const string = { type: 'string' } as const;
 const boolean = { type: 'boolean' } as const;
 const dates = { from: string, to: string };
 const options: Record<string, NonNullable<ParseArgsConfig['options']>> = {
-  start: {}, stop: {}, status: {}, pair: {}, config: {}, alias: {}, chats: {}, who: {},
+  start: {}, stop: {}, status: {}, pair: {}, config: {}, alias: {}, chats: {}, who: {}, open: {},
   send: { to: string, text: string, image: string, caption: string, document: string, direct: boolean },
   sends: { limit: string },
   search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean },
@@ -72,7 +73,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     const str = (name: string): string | undefined => values[name] as string | undefined;
     const positionals = parsed.positionals;
     if (command !== 'config' && command !== 'alias'
-      && positionals.length !== (command === 'search' || command === 'who' ? 1 : 0)) {
+      && positionals.length !== (command === 'search' || command === 'who' || command === 'open' ? 1 : 0)) {
       throw new Error('Unexpected or missing positional argument.');
     }
     if (!dependencies.signal) {
@@ -180,6 +181,17 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       throw new Error('--from must not exceed --to.');
     }
     const store = new JsonlStore({ ...config, directory });
+    if (command === 'open') {
+      const id = positionals[0]!;
+      for (const { record } of store.iterate()) {
+        if (record.messageId === id && record.mediaPath !== undefined) {
+          out(localMediaPath(directory, record.mediaPath) + '\n');
+          return 0;
+        }
+      }
+      err('No archived media for that message ID.\n');
+      return 3;
+    }
     if (command === 'who') {
       const jid = positionals[0]!;
       if (!/^[^\s@]+@[^\s@]+$/.test(jid)) throw new Error('who requires a JID.');
@@ -249,7 +261,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     if (limit > 0) for (const { record } of store.iterate({ filters })) {
       const display = displayRecord(cache, record);
       if (values.json) records.push(display);
-      else out(`${new Date(record.ts).toISOString()} ${JSON.stringify(display.chatName)}${display.chatManual ? ' [manual]' : ''} ${JSON.stringify(display.senderName)}${display.senderManual ? ' [manual]' : ''} ${JSON.stringify(record.body)}\n`);
+      else out(`${new Date(record.ts).toISOString()} ${JSON.stringify(display.chatName)}${display.chatManual ? ' [manual]' : ''} ${JSON.stringify(display.senderName)}${display.senderManual ? ' [manual]' : ''} ${JSON.stringify(record.body)}${record.mediaPath === undefined ? '' : ` mediaPath=${JSON.stringify(record.mediaPath)}`}\n`);
       if ((values.json ? records.length : ++count) >= limit) break;
     }
     if (values.json) { print(records); return records.length ? 0 : 3; }

@@ -12,12 +12,13 @@ protect against processes running as your user, root, or compromised backups.
 
 | File | Contents and retention |
 | --- | --- |
-| `messages.jsonl` and numbered rotations | Schema-v1 text/captions, chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, and optional live/history `syncType`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
+| `messages.jsonl` and numbered rotations | Schema-v2 text/captions (v1 remains readable), chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, optional live/history `syncType`, and optional relative `mediaPath`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
+| `media/<yyyy-mm>/<messageId>-<ext>` | Downloaded incoming images, documents, videos, audio, and stickers; UTC message month, directory `0700`, files `0600`, at most 64 MiB per file. No automatic rotation or expiry. |
 | `auth/` | Baileys linked-device credentials and encryption/session key material. Directory `0700`, files tightened to `0600` after writes. Treat as credentials. |
 | `contacts.json` | Schema-v3 names, self-declared pushnames/timestamps, group participant JIDs, LIDs, and ranks, plus operator-curated `aliases` entries with `name` and `manual: true`; atomically replaced, mode `0600`. Reads v1/v2 caches. Names in message records remain transport snapshots. |
 | `contacts.json.lock` | Empty, private lock held briefly during cache writes to preserve manual edits while the daemon runs; removed when the write completes. An interrupted writer can leave it behind; stop writers before removing a stale lock. |
 | `lid-map.json` | Schema-v1 observed LID→phone-JID pairs; atomically replaced. No automatic expiry. |
-| `config.json` | Receipt/presence gates, port, and rotation settings; atomically replaced by CLI configuration. |
+| `config.json` | Receipt/presence and incoming-media gates, port, and rotation settings; atomically replaced by CLI configuration. |
 | `sends.jsonl` | Append-only send-attempt audit, described below. No automatic rotation. |
 | `wallfly.pid` | PID used to keep foreground and direct modes from sharing auth writers; removed on normal exit. |
 | `pairing.png` | Temporary pairing QR, removed on connection, disconnection, or stop. A crash may leave it behind. Terminal QR output can persist in terminal/service logs. |
@@ -25,11 +26,11 @@ protect against processes running as your user, root, or compromised backups.
 History backfill is on by default: sockets use `syncFullHistory: true`, with
 no configuration switch. After pairing, WhatsApp may deliver history in waves
 over minutes to hours; keep the daemon running to receive them. The archive
-stores text/captions and metadata only; incoming media is not downloaded or
-archived. Roughly 0.5–1 KiB per short text record (including JSON metadata)
+stores text/captions and metadata, and downloads incoming attachments by default
+when available. Roughly 0.5–1 KiB per short text record (including JSON metadata)
 means about 50–100 MiB for 100,000 messages; long text and names need more.
-Default rotation retains roughly 60 MiB, so large backfills can delete earlier
-records. Adjust `maxBytes`/`keepRotations` before pairing to retain more.
+Default JSONL rotation retains roughly 60 MiB (excluding media), so large
+backfills can delete earlier records. Adjust `maxBytes`/`keepRotations` before pairing to retain more.
 
 The application does record
 text/captions from disappearing or view-once wrappers; WhatsApp expiry,
@@ -120,6 +121,41 @@ output are sensitive, so do not capture them in shared logs.
 Each history wave logs `{"event":"history.wave","recorded":N}` to stderr,
 counting only successful new appends (zero for duplicate-only or empty waves).
 These progress logs contain no message content or identifiers.
+
+## Incoming media: local storage, default ON
+
+`media_archival` defaults to `true`. Received attachments are downloaded with
+Baileys into `~/.wallfly/media/<yyyy-mm>/<messageId>-<ext>` and referenced by a
+relative `mediaPath` in schema-v2 records. The month is the message timestamp in
+UTC; unsafe or overlong IDs are replaced by a SHA-256 hash, and extensions are
+restricted to safe characters. Symlink directories/files and filename collisions
+with different bytes are refused. Downloads stream to a private temporary file;
+only complete files within the 64 MiB limit are published.
+
+Media is stored locally and never uploaded by archival. It counts toward disk
+usage in addition to the JSONL rotation budget. Media has no automatic cleanup:
+rotating/deleting a message record does not remove its attachment. Interrupted
+processes can leave temporary files or attachments without a corresponding
+record. Include `media/` when sizing disk space, backups, or erasing local data.
+View-once/disappearing attachments delivered to this device may also be retained;
+WhatsApp expiry/deletion does not erase local files.
+
+Disable future downloads with:
+
+```sh
+wallfly config set media_archival false
+```
+
+Restart the daemon to apply the setting. Existing attachments remain. Disabled,
+unavailable, failed, or oversized downloads retain `mediaType` and any caption
+without `mediaPath`; other records continue to append. Expired media does not
+trigger a reupload request to another device. Messages originating from the
+operator are not downloaded by this incoming-media feature.
+
+`wallfly search` and JSON/CSV exports include `mediaPath` when available; exports
+contain references, not attachment bytes. `wallfly open <messageId>` prints an
+existing local file's absolute path without launching a viewer or executing it.
+Treat attachments as untrusted content when opening them yourself.
 
 ## What leaves through explicit sends
 

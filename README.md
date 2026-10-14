@@ -30,9 +30,10 @@ an npm-compatible tarball; this project does not publish to npm.
   reconnects; replay after a process restart can still create duplicates.
   There is no edit/delete reconciliation or guarantee of a complete backup. Disappearing
   and view-once text/captions remain in the archive until local retention deletes
-  them. Incoming media bytes are not downloaded or archived; only text/captions
-  and metadata are stored. Very old media can appear with a `mediaType` and an
-  empty `body` when no caption is available.
+  them. Received attachments are archived locally by default, up to 64 MiB each;
+  disable with `wallfly config set media_archival false` and restart. Unavailable
+  media retains `mediaType` and any caption without a `mediaPath`. Media files
+  count toward disk usage and have no automatic expiry.
 - **Local security:** files are private by permissions, not encrypted at rest.
   The loopback API has no authentication; other local processes can send as
   your linked account. No remote bind option exists.
@@ -88,10 +89,11 @@ logs `{"event":"history.wave","recorded":N}` to the daemon's stderr, where
 These progress logs contain no message content or identifiers. Records retain
 `syncType: "append"` for history and `"notify"` for live messages.
 
-Media is not downloaded; the archive stores text/captions and metadata only.
+Received media is downloaded locally by default, up to 64 MiB per attachment.
+Media consumes additional disk space and is not removed by JSONL rotation.
 Budget roughly 0.5–1 KiB per short text record including JSON metadata, or about
 50–100 MiB for 100,000 messages; long text and names need more. Default rotation
-retains roughly 60 MiB (a 10 MiB current file plus five rotations), so a large
+retains roughly 60 MiB of JSONL (a 10 MiB current file plus five rotations), so a large
 backfill can delete earlier archived records. Increase `maxBytes` or
 `keepRotations` before pairing if you want to retain more history.
 
@@ -111,6 +113,7 @@ Use `--` before a positional query starting with a dash.
 | `stop` | SIGTERM through pidfile, or local `POST /stop` if missing/stale. | `wallfly stop` |
 | `status` | JSON status from local `GET /status`. | `wallfly status` |
 | `pair` | Foreground daemon with terminal QR and private PNG; reuses existing auth. Stop a running daemon first. | `wallfly pair` |
+| `open MESSAGE_ID` | Print an archived attachment's local path without executing it. | `wallfly open synthetic-id` |
 | `config get [KEY]` | Show one setting or all settings as JSON. | `wallfly config get port` |
 | `config set KEY VALUE` | Validate and persist a setting. Restart the daemon to apply. | `wallfly config set keepRotations 10` |
 | `send` | `--to JID`, `--text TEXT` or `--image PATH` or `--document PATH`; optional `--caption C`, `--direct`. | `wallfly send --to synthetic-chat@s.whatsapp.net --text "synthetic-text"` |
@@ -161,6 +164,7 @@ partial files; inspect or remove them before choosing the same destination again
 | --- | --- | --- |
 | `read_receipts` | `false` | `true` or `false` |
 | `presence` | `false` | `true` or `false` |
+| `media_archival` | `true` | `true` or `false`; archive received attachments |
 | `port` | `7877` | Integer 1–65535; HTTP remains on `127.0.0.1`. |
 | `maxBytes` | `10485760` | Positive integer bytes before message-store rotation. |
 | `keepRotations` | `5` | Nonnegative integer retained archives, plus the current file. |
@@ -324,11 +328,11 @@ do not collect or share QR/session data from service logs.
 Messages are UTF-8 JSONL: one newline-terminated JSON object per record in
 `~/.wallfly/messages.jsonl`. The store directory uses mode `0700` and the file
 uses mode `0600`; permissions are enforced on creation and when opened for
-writing. Each record carries schema version `v: 1`.
+writing. New daemon records carry schema version `v: 2`; v1 records remain readable.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `v` | `1` | Schema version; unsupported versions are skipped on read. |
+| `v` | `1` or `2` | Schema version; unsupported versions are skipped on read. |
 | `ts` | integer | Message timestamp in Unix milliseconds, nonnegative. |
 | `receivedAt` | integer | Local receipt timestamp in Unix milliseconds, nonnegative. |
 | `chatJid` | string | Nonempty chat identifier. |
@@ -339,14 +343,25 @@ writing. Each record carries schema version `v: 1`.
 | `senderName` | string or null | Cached sender name, if known. |
 | `pushName` | string or null | Sender-provided display name, if available. |
 | `body` | string | Message text or caption; empty for messages without text. |
-| `mediaType` | string or null | Media kind, if present; media bytes are not stored. |
+| `mediaType` | string or null | Media kind, if present. |
+| `mediaPath` | string (optional, v2) | Relative local path, e.g. `media/2026-01/synthetic-id-jpg`. |
 | `messageId` | string | Nonempty transport message identifier. |
 | `syncType` | `"notify"` or `"append"` (optional) | Live or history event; present on new daemon records. |
 
-All fields except `syncType` are required. Unknown metadata uses `null`,
+All fields except `syncType` and `mediaPath` are required. Unknown metadata uses `null`,
 timestamps must be safe integers, and no phone-number format is imposed on JIDs. The exported
 `validateRecord(value)` type guard uses no schema library. `append` rejects
 invalid records and serializes only the fields above.
+
+Incoming attachments are streamed to `~/.wallfly/media/<yyyy-mm>/<messageId>-<ext>`
+(UTC message month; directories `0700`, files `0600`). Safe MIME/filename
+extensions are used; unsafe IDs are hashed. The default `media_archival: true`
+gate archives received images/documents/videos/audio/stickers up to 64 MiB each.
+Disabled, unavailable, or oversized media keeps metadata without a path.
+Archival never uploads media. Files count toward disk usage and remain after
+JSONL rotation. Search (readable or `--json`) and exports surface `mediaPath`;
+`wallfly open MESSAGE_ID` prints the existing absolute path without launching it.
+Exports reference attachments without copying their bytes. See [PRIVACY.md](docs/PRIVACY.md).
 
 ### Store API
 

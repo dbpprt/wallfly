@@ -57,7 +57,7 @@ test('validator rejects missing fields, invalid types, versions, and timestamps'
     delete incomplete[key];
     assert.equal(validateRecord(incomplete), false, key);
   }
-  for (const invalid of [null, [], 1, { ...valid, v: 2 }, { ...valid, ts: -1 },
+  for (const invalid of [null, [], 1, { ...valid, v: 3 }, { ...valid, ts: -1 },
     { ...valid, receivedAt: Infinity }, { ...valid, ts: 1.1 }, { ...valid, chatJid: '' },
     { ...valid, senderJid: '' }, { ...valid, messageId: '' }, { ...valid, chatType: 'other' },
     { ...valid, fromMe: 1 }, { ...valid, body: null }, { ...valid, mediaType: {} },
@@ -66,7 +66,7 @@ test('validator rejects missing fields, invalid types, versions, and timestamps'
     assert.equal(validateRecord(invalid), false);
   }
   const store = setup(t);
-  assert.throws(() => store.append({ ...valid, v: 2 } as unknown as MessageRecord), TypeError);
+  assert.throws(() => store.append({ ...valid, v: 3 } as unknown as MessageRecord), TypeError);
   assert.equal(existsSync(store.path), false);
 });
 
@@ -163,7 +163,7 @@ test('rotation uses UTF-8 bytes, does not rotate at exact limit, keeps oversized
 test('corrupt JSON, invalid schema, unknown version, blank and invalid UTF-8 lines skip and count', (t) => {
   const store = setup(t);
   store.append(record());
-  appendFileSync(store.path, 'invalid-json\n{}\n' + JSON.stringify({ ...record(), v: 2 }) + '\n\n');
+  appendFileSync(store.path, 'invalid-json\n{}\n' + JSON.stringify({ ...record(), v: 3 }) + '\n\n');
   const invalidUtf8 = Buffer.from(JSON.stringify(record()) + '\n');
   invalidUtf8[invalidUtf8.indexOf('synthetic-A')] = 0xff;
   appendFileSync(store.path, invalidUtf8);
@@ -265,4 +265,18 @@ test('invalid rotation options reject without creating storage', (t) => {
     { keepRotations: -1 }, { keepRotations: 1.5 }]) {
     assert.throws(() => new JsonlStore({ directory: store.directory, ...options }), RangeError);
   }
+});
+
+
+test('mixed v1/v2 records read unchanged; v2 mediaPath persists and unsafe paths reject', (t) => {
+  const store = setup(t);
+  const legacy = record();
+  const archived = record({ v: 2, messageId: 'test-v2', mediaType: 'image', mediaPath: 'media/2026-01/test-v2-jpg' });
+  const plain = record({ v: 2, messageId: 'test-v2-plain' });
+  for (const entry of [legacy, archived, plain]) store.append(entry);
+  assert.deepEqual(new JsonlStore({ directory: store.directory }).filter().records, [legacy, archived, plain]);
+  for (const mediaPath of [null, '', '/tmp/test', '../test', 'media/2026-01/../../test', 'media/2026-13/id-jpg', 'media/2026-01/id.jpg']) {
+    assert.equal(validateRecord({ ...archived, mediaPath }), false);
+  }
+  assert.equal(validateRecord({ ...archived, v: 1 }), false);
 });

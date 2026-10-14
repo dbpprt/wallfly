@@ -10,6 +10,7 @@ import type { MessageRecord } from '../store/index.js';
 import { NameCache } from './cache.js';
 import { privateDirectory, removeFile } from './files.js';
 import { mapMessage } from './map.js';
+import { archiveMedia } from './media.js';
 import { printPairingQr } from './pair.js';
 import type { PairingOutput } from './pair.js';
 import { createBaileysSocket } from './socket.js';
@@ -28,6 +29,8 @@ export interface DaemonOptions {
   /** Explicit opt-ins; both default OFF and only apply during explicit sends. */
   read_receipts?: boolean;
   presence?: boolean;
+  /** Incoming attachments are archived by default. */
+  media_archival?: boolean;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
 }
@@ -54,6 +57,9 @@ function validateOptions(options: DaemonOptions): void {
   const port = options.port ?? 7877;
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new RangeError('Invalid control port.');
   validateSendOptions(options);
+  if (options.media_archival !== undefined && typeof options.media_archival !== 'boolean') {
+    throw new TypeError('media_archival must be true or false.');
+  }
   const base = options.backoffBaseMs ?? 1000;
   const max = options.backoffMaxMs ?? 60000;
   if (!Number.isSafeInteger(base) || base < 1 || !Number.isSafeInteger(max)
@@ -280,7 +286,7 @@ export class DaemonService {
         this.cache.contacts(contacts);
         this.cache.groups(chats.filter((chat) => chat.id.endsWith('@g.us'))
           .map((chat) => ({ id: chat.id, ...(chat.name == null ? {} : { subject: chat.name }) })));
-        this.append(messages, 'append', socket);
+        await this.append(messages, 'append', socket);
         await this.refreshGroups(socket);
       });
     } catch {
@@ -312,7 +318,7 @@ export class DaemonService {
     this.removeListeners.push(() => socket.ev.off(event, callback));
   }
 
-  private append(messages: WAMessage[], type: 'notify' | 'append', socket: ListenerSocket): void {
+  private async append(messages: WAMessage[], type: 'notify' | 'append', socket: ListenerSocket): Promise<void> {
     let recorded = 0;
     for (const message of messages) {
       try { this.cache.message(message, socket.user?.id); }
@@ -321,6 +327,12 @@ export class DaemonService {
         if (message.key.id && this.seenMessageIds.has(message.key.id)) continue;
         const record = mapMessage(message, type, this.cache, socket.user?.id);
         if (record) {
+          if (record.mediaType && !record.fromMe && this.options.media_archival !== false) {
+            try {
+              if (!socket.downloadMedia) throw new Error('Media download unavailable.');
+              record.mediaPath = await archiveMedia(this.directory, message, record, socket.downloadMedia.bind(socket));
+            } catch { this.log('media.archive.failed'); }
+          }
           this.store.append(record);
           this.seenMessageIds.add(record.messageId);
           this.recorded++;

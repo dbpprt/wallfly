@@ -34,6 +34,7 @@ async function setup(t: TestContext) {
   });
   const dependencies: Dependencies = {
     makeWASocket, fetchLatestBaileysVersion,
+    downloadMediaMessage: async () => { throw new Error('Unexpected download.'); },
     DEFAULT_CONNECTION_CONFIG: { version: bundledVersion } as SocketConfig,
     useMultiFileAuthState: async () => ({
       state: { creds: {}, keys: { set: async () => {} } } as unknown as AuthenticationState,
@@ -140,4 +141,18 @@ test('saved and newly written auth LID mappings reach identity persistence offli
   assert.equal(new LidMap(options.authDirectory).phoneJid('synthetic-new@lid'), 'synthetic-new-phone@s.whatsapp.net');
   assert.equal(readFileSync(map.path, 'utf8').includes('synthetic-deleted'), false);
   assert.equal(statSync(map.path).mode & 0o777, 0o600);
+});
+
+
+test('media adapter requests a stream with a timeout and no reupload context', async (t) => {
+  const { create, options, dependencies } = await setup(t);
+  const { PassThrough } = await import('node:stream');
+  const stream = new PassThrough();
+  const download = t.mock.fn(async () => stream);
+  const socket = await create({ ...options, version: overrideVersion }, { ...dependencies,
+    downloadMediaMessage: download as Dependencies['downloadMediaMessage'] });
+  const message = { key: { id: 'synthetic-media' }, message: { imageMessage: { url: 'https://synthetic.invalid/media' } } };
+  assert.equal(await socket.downloadMedia!(message), stream);
+  assert.deepEqual(download.mock.calls[0]?.arguments, [message, 'stream', { options: { timeout: 30000 } }]);
+  stream.destroy();
 });
