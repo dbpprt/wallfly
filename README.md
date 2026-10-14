@@ -4,21 +4,24 @@
 
 > A fly on the wall for your WhatsApp.
 
-wallfly is a self-hosted **listener** for your own WhatsApp account. It logs in
-as a linked device (via [Baileys](https://github.com/WhiskeySockets/Baileys)),
-watches every chat you can see, and **records everything locally** — searchable
-through a documented CLI.
+wallfly is a self-hosted, privacy-first WhatsApp **client** for your own account.
+It connects as a linked device (via [Baileys](https://github.com/WhiskeySockets/Baileys)),
+records your chats locally, and exposes them through a documented CLI. It provides
+an explicit send surface, audited before outgoing content leaves the machine.
 
-**No send path, ever: wallfly cannot send messages, mark chats read, set presence,
-or upload content.** It is a fly on the wall, not a puppet.
+**Every send is logged to `~/.wallfly/sends.jsonl`; read receipts and presence
+default OFF (config-gated).**
+
+Sending is an explicit operator or documented script action through `wallfly send`
+or the local `POST /send` API. There are no automatic or scheduled sends.
 
 ## Status
 
 🚧 Under active construction — see the issue tracker.
 
 This repository currently contains the TypeScript scaffold, offline smoke tests,
-and CI only. The listener, store, and CLI are not implemented yet. Baileys will
-be added in task 3; this scaffold has zero runtime dependencies.
+and CI only. The daemon, store, send surface, and CLI are not implemented yet.
+Baileys will be added in task 3; this scaffold has zero runtime dependencies.
 
 ## Quickstart
 

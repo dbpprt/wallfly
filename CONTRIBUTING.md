@@ -22,24 +22,41 @@ Commits, such as `chore: scaffold tooling`, `feat: add store reader`, or
 Explain every dependency addition; any runtime dependency requires a one-line
 justification. Keep `main` green.
 
-## Read-only rule
+## Prime directives
 
 From [AGENT_PROMPT.md](AGENT_PROMPT.md):
 
-> **No send path, ever.** The daemon must not contain any code that sends
-> messages, marks chats read, sets presence, or uploads anything. If a
-> dependency offers it, don't import it. A PR that adds a send path is
-> rejected on sight. `grep -ri "sendmessage\|sendreadreceipt\|sendpresence" src/`
-> must return zero hits (tests may assert this).
+> **Send only through the explicit send surface.** All outgoing traffic lives
+> in `src/send/` and is reachable ONLY via the `wallfly send` CLI command and
+> the `POST /send` local API endpoint. No auto-sends, no scheduled sends, no
+> autonomous behavior, no reactions to incoming messages. Every send is
+> appended to `~/.wallfly/sends.jsonl` (audit log) before it leaves.
+>
+> **Read receipts and presence are config-gated, default OFF.** Marking the
+> user's chats read or broadcasting presence silently is a side effect users
+> didn't ask for. `wallfly config set read_receipts true` / `presence true`
+> to enable; document it.
+
+Only `src/send/` may import the Baileys send API when transport is introduced.
+The send audit records `ts`, `jid`, the text SHA-256 hash, and `kind`. If the
+audit append fails, the send must not leave the machine. Test this ordering
+offline when sending is implemented.
 
 Never commit tokens, phone numbers, session data, or chat content, including
 in fixtures and examples. Gitleaks runs on every PR and fails on findings.
+Bind the daemon to `127.0.0.1` by default; any non-loopback bind requires an
+explicit, documented opt-in. Keep the message store append-only at
+`~/.wallfly/messages.jsonl`, with file mode `0600`, directory mode `0700`, and
+a `v` schema version on every record. Sends use the separate audit log.
 
 ## PR checklist
 
 - [ ] Scope is small and the PR references its Board card ID.
 - [ ] Commits use Conventional Commits.
-- [ ] No send path, read receipts, presence updates, or uploads were added.
+- [ ] All outgoing behavior stays in `src/send/`, with sends reachable only via `wallfly send` or `POST /send`.
+- [ ] Every send is audited before leaving; no automatic or scheduled sends exist.
+- [ ] Read receipts and presence default OFF and require explicit configuration to enable.
+- [ ] Local-only defaults and append-only store permissions/schema are preserved.
 - [ ] No secrets or private chat data appear anywhere in the change.
 - [ ] Dependencies and their purpose are explained in the PR body.
 - [ ] Tests run offline and cover the changed boundaries.
