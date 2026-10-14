@@ -1,72 +1,55 @@
 # Architecture
 
-This is the target architecture. The current scaffold contains empty ESM
-module boundaries and offline smoke tests; no product behavior is implemented.
+wallfly currently implements a linked-device listener, local process control,
+contact/group name cache, and a versioned JSONL store. The CLI and explicit
+send surface remain planned module boundaries.
 
-## Module map
-
-| Boundary | Planned responsibility |
+| Boundary | Responsibility |
 | --- | --- |
-| `src/daemon/` | Baileys linked-device connection, reconnect, pairing QR output, contact/group name cache, and event sink. Keep business logic out of transport. |
-| `src/store/` | Append-only JSONL writer and reader, tailing, chat/sender/time/text filters, cursors, and rotation by size. |
-| `src/send/` | Sole outgoing boundary: explicit text/image/document sends, audit-log writer, and read-receipt/presence configuration gates. Only this module may import the Baileys send API. |
-| `src/cli/` | Plain argument parsing, lifecycle/pairing/config commands, explicit send, send audit listing, search, tail, chats, and JSON/CSV export. No CLI framework. |
-| `test/` | Offline `node:test` coverage; transport must be mocked when introduced. |
-| `docs/` | Architecture and privacy documentation. |
-
-Baileys will be added at an exact version in task 3. There are no runtime
-dependencies in this scaffold.
-
-## Planned data flow
+| `src/daemon/` | Baileys socket adapter, event mapping, reconnect, pairing QR output, persisted name cache, and loopback HTTP status/stop. |
+| `src/store/` | Append-only JSONL writer/reader, filters, tail, cursors, and size rotation. |
+| `src/send/` | Placeholder for the planned explicit, audited outgoing surface. |
+| `src/cli/` | Placeholder for plain argument parsing and lifecycle/query/export commands. |
+| `test/` | Offline `node:test` coverage using injected transport mocks. |
 
 ```text
 WhatsApp linked-device events
              |
              v
-       src/daemon/ ----> local pairing QR / connection status
-             |
+       src/daemon/ ----> pairing QR / connection status
+             |          contacts.json / loopback status + stop
              | received events + cached names
              v
         src/store/ ----> ~/.wallfly/messages.jsonl
-             ^          append-only; versioned records
-             |
-        local queries
-             |
-         src/cli/ -----> operator terminal / local export
-
-Operator / documented script
-             |
-             | wallfly send / local POST /send
+             |          append-only; versioned records
              v
-         src/send/      receipts/presence config gates: default OFF
-             |
-             | append audit before sending; stop on append failure
-             v
- ~/.wallfly/sends.jsonl
-             |
-             | only after successful audit append
-             v
-    WhatsApp delivery
+       local queries
 ```
 
-## Invariants
+The daemon uses a narrow `ListenerSocket` interface with no outgoing message,
+chat-read, or presence APIs. Baileys is imported lazily by the production socket
+factory. Tests inject mocks and never instantiate the production transport.
+Incoming event handlers run serially to preserve name updates before message
+appends. Each handler catches failures, and individual message append failures
+allow the rest of a batch to continue. Old sockets are detached on disconnect;
+shutdown drains queued events and cancels retries.
 
-- Sends are explicit actions through `wallfly send` or local `POST /send`,
-  implemented only in `src/send/`. No automatic, scheduled, autonomous, or
-  incoming-message-triggered sends.
-- Each send is appended to `~/.wallfly/sends.jsonl` before leaving. The audit
-  records `ts`, `jid`, the text SHA-256 hash, and `kind`.
-- Read receipts and presence default OFF. Planned opt-ins are
-  `wallfly config set read_receipts true` and `wallfly config set presence true`.
-- Store path: `~/.wallfly/messages.jsonl`, file mode `0600`, directory mode
-  `0700`. Every record carries a schema version in `v`.
-- Any local daemon listener binds to `127.0.0.1` by default. A non-loopback
-  bind requires an explicit, documented opt-in.
-- No telemetry or cloud sync. See [PRIVACY.md](PRIVACY.md).
+Baileys is pinned to `6.7.23`; `qrcode` is pinned to `1.5.4` for terminal/PNG
+pairing output. The store still has no runtime dependencies. `@types/qrcode`
+and `@types/ws` are development-only declarations; the DOM type library is
+included because qrcode's declarations describe browser overloads as well as
+its Node API. Application type checking remains strict.
 
-## Design work remaining
+Store v1 now accepts optional `syncType: "notify" | "append"` metadata;
+existing v1 records are unchanged. Each daemon record includes it. File mode
+is `0600`, directory mode is `0700`. The auth directory is `~/.wallfly/auth/`;
+name cache updates atomically replace `~/.wallfly/contacts.json`.
 
-Record schema and migrations, rotation naming and retention, cursor behavior,
-transport event normalization, local process control, CLI/API contracts, audit
-schema and failure handling, and configuration gates will be specified alongside
-their implementations.
+The control listener binds exclusively to `127.0.0.1` (default port `7877`),
+with `GET /status` and `POST /stop`. Other paths/methods return `404`.
+`markOnlineOnConnect` is false; receipts and presence options cannot be enabled
+in the current implementation. No outgoing module behavior has been added.
+
+See [DAEMON.md](DAEMON.md) for lifecycle, pairing, failure handling, and API
+contracts, and [PRIVACY.md](PRIVACY.md) for data handling. Sending/audit/config
+behavior described in the project roadmap is not implemented yet.

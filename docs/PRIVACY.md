@@ -1,9 +1,8 @@
 # Privacy
 
 wallfly is a self-hosted, privacy-first WhatsApp client for the operator's own
-account with an explicit, audited send surface. This scaffold does not connect,
-pair, store data, or send yet. The following describes the intended behavior
-for v0.1.
+account with a planned explicit, audited send surface. The listener connects,
+pairs, and stores locally. See [DAEMON.md](DAEMON.md) for implemented behavior.
 
 ## What wallfly stores
 
@@ -11,15 +10,20 @@ Received messages from the operator's chats and metadata needed to search them
 (chat and sender identifiers, timestamps, and cached contact/group names) stay
 in a local append-only JSONL store at `~/.wallfly/messages.jsonl`. Each record
 has a `v` schema version. The store file uses mode `0600`; its directory uses
-`0700`. The exact schema will be documented with the store implementation.
+`0700`. The schema is documented in the README, including optional live/history
+`syncType` metadata. Media bytes are not archived. The application retains
+archived ephemeral/view-once text and captions under the store rotation policy;
+WhatsApp expiry or deletion does not remove existing local records.
 
-Linked-device authentication/session material must also stay local and private.
-Its final location will be documented when pairing is implemented. Treat it as
-a credential. Pairing QR output and local exports are sensitive too.
+Linked-device credentials live in `~/.wallfly/auth/` (directory `0700`, files
+`0600`). Cached identifiers/names live in `~/.wallfly/contacts.json` (`0600`).
+Treat auth files and pairing output as credentials. Pairing prints a terminal
+QR and writes `~/.wallfly/pairing.png` (`0600`), removed on connection,
+disconnection, or stop. Do not share QR output or save terminal logs.
 
 ## Send audit log
 
-Every send is appended to the separate local audit log at
+Every planned send must be appended to the separate local audit log at
 `~/.wallfly/sends.jsonl` before it executes or leaves the machine. A failed audit
 append must prevent the send. Per [AGENT_PROMPT.md](../AGENT_PROMPT.md), each audit
 record contains `ts`, `jid`, text SHA-256, and `kind`. The final field names and
@@ -39,15 +43,16 @@ protect the host and any backups.
 
 ## What leaves through explicit actions
 
-The future linked-device transport necessarily connects to WhatsApp and exchanges
-authentication and protocol traffic. Explicit sends also transmit the chosen text,
-images, or documents through WhatsApp to the chosen recipient. These actions must
+The linked-device transport necessarily connects to WhatsApp and exchanges
+authentication and protocol traffic. Planned explicit sends will also transmit
+the chosen text, images, or documents through WhatsApp to the chosen recipient. These actions must
 enter through `wallfly send` or the local `POST /send` API, run only in `src/send/`,
 and append the audit before transmission. No automatic or scheduled sends or
 reactions to incoming messages are allowed.
 
-Any local listener binds to `127.0.0.1` by default; non-loopback access must be
-an explicit, documented opt-in.
+The implemented control listener accepts only `127.0.0.1` and exposes
+status/stop. No remote bind or send endpoint is available. Local processes
+can access the control endpoint without authentication.
 
 ## Read receipts and presence: config-gated, default OFF
 
@@ -63,16 +68,19 @@ The first permits marking the operator's chats read; the second permits
 broadcasting presence. Enabling either allows the corresponding status information
 to leave via WhatsApp. Both gates belong in `src/send/` and default OFF.
 Configuration and these commands are planned, not implemented yet.
+The current listener rejects either flag when enabled and uses
+`markOnlineOnConnect: false`. It never calls message, read, or presence APIs.
+Baileys still exchanges the protocol traffic required for a linked device.
+The application logs lifecycle/error categories, without messages or credentials.
 
 ## Unlink and remove local data
 
-When pairing is available:
+To unlink the listener:
 
-1. Stop the wallfly daemon (`wallfly stop`, planned for v0.1).
+1. Stop the daemon with Ctrl-C or local `POST /stop` (`wallfly stop` is planned).
 2. On your phone, open WhatsApp **Settings > Linked devices** (or the Android
    menu **Linked devices**), select wallfly's linked session, and choose **Log out**.
-3. Remove the local authentication/session files to prevent reuse. Their exact
-   path will be documented with pairing.
+3. Remove `~/.wallfly/auth/` to prevent session reuse.
 4. If you also want to remove the message archive and send audit, delete
    `~/.wallfly/` and any exports, rotated archives, and backups you created.
    Unlinking alone does not delete existing local records or retract deliveries.

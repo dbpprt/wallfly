@@ -121,9 +121,10 @@ export class JsonlStore {
     if (!validateRecord(record)) throw new TypeError('Invalid v1 message record.');
     // Persist only schema fields; extra transport metadata must not leak to disk.
     const { v, ts, receivedAt, chatJid, chatName, chatType, fromMe, senderJid,
-      senderName, pushName, body, mediaType, messageId } = record;
+      senderName, pushName, body, mediaType, messageId, syncType } = record;
     const line = Buffer.from(`${JSON.stringify({ v, ts, receivedAt, chatJid, chatName,
-      chatType, fromMe, senderJid, senderName, pushName, body, mediaType, messageId })}\n`);
+      chatType, fromMe, senderJid, senderName, pushName, body, mediaType, messageId,
+      ...(syncType === undefined ? {} : { syncType }) })}\n`);
     let fd = this.openWriter();
     try {
       let size = fstatSync(fd).size;

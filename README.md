@@ -2,32 +2,42 @@
 
 [![CI](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dbpprt/wallfly/actions/workflows/ci.yml)
 
-> Your self-hosted WhatsApp client, with explicit, audited sends.
+> Your self-hosted WhatsApp client, with local storage and planned audited sends.
 
 wallfly is a self-hosted, privacy-first WhatsApp **client**: a linked-device
 daemon (via [Baileys](https://github.com/WhiskeySockets/Baileys)) that records
 the operator's own chats to a local store, exposes them through a documented
-CLI, and can **send** messages through an explicit, audited send surface.
+CLI, and plans to **send** messages through an explicit, audited send surface.
 
-**Every send is logged to `~/.wallfly/sends.jsonl`; read receipts and presence
-default OFF (config-gated).**
+**The current implementation is a listener. Sending and configuration opt-ins
+are not implemented.**
 
-All outgoing behavior belongs in `src/send/`. Sending is an explicit operator
-or documented script action through `wallfly send` or the local `POST /send` API.
-The audit record is appended before the send executes; a failed append prevents
-the send. There are no automatic, scheduled, or incoming-message-triggered sends.
+All planned outgoing behavior belongs in `src/send/`, through an explicit
+operator or documented script action via `wallfly send` or local `POST /send`.
+The planned audit record must be appended before the send executes; a failed
+append must prevent the send. There are no automatic, scheduled, or
+incoming-message-triggered sends.
 
 ## Status
 
 🚧 Under active construction — see the issue tracker.
 
-The JSONL store is implemented with offline tests and CI. The daemon, send
-surface, and CLI are not implemented yet. Baileys will be added in task 3;
-the store has zero runtime dependencies.
+The JSONL store and Baileys listener are implemented with offline tests and CI.
+The send surface and CLI remain planned. Baileys is pinned to `6.7.23`; the
+store has zero runtime dependencies.
 
 ## Quickstart
 
-coming in v0.1
+```sh
+npm ci
+npm run daemon
+```
+
+Scan the printed QR with WhatsApp **Settings > Linked devices**. The daemon
+also prints a private PNG path. Control it locally with `GET /status` and
+`POST /stop` at `http://127.0.0.1:7877`; Ctrl-C also stops it. See
+[the daemon guide](docs/DAEMON.md) for pairing, persistence, and reconnect.
+The `wallfly` CLI and sending commands are not available yet.
 
 ## Data format
 
@@ -51,9 +61,10 @@ writing. Each record carries schema version `v: 1`.
 | `body` | string | Message text or caption; empty for messages without text. |
 | `mediaType` | string or null | Media kind, if present; media bytes are not stored. |
 | `messageId` | string | Nonempty transport message identifier. |
+| `syncType` | `"notify"` or `"append"` (optional) | Live or history event; present on new daemon records. |
 
-All fields are required. Unknown metadata uses `null`, timestamps must be safe
-integers, and no phone-number format is imposed on JIDs. The exported
+All fields except `syncType` are required. Unknown metadata uses `null`,
+timestamps must be safe integers, and no phone-number format is imposed on JIDs. The exported
 `validateRecord(value)` type guard uses no schema library. `append` rejects
 invalid records and serializes only the fields above.
 
