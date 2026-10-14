@@ -6,7 +6,7 @@ sends. It runs on Node.js >=20 with ESM and no application framework.
 
 | Boundary | Shipped responsibility |
 | --- | --- |
-| `src/daemon/` | Lazy Baileys socket factory, incoming event mapping, reconnect, terminal/PNG pairing, persisted name cache, and loopback status/stop/send routing. |
+| `src/daemon/` | Lazy Baileys socket factory, incoming event mapping, reconnect, terminal/PNG pairing, persisted identity caches, and loopback status/stop/send routing. |
 | `src/store/` | Synchronous JSONL append/read, filters, tail, cursors, validation, and size rotation. No runtime dependencies. |
 | `src/send/` | Baileys message/read/presence adapter, shared audited send service, local media loading, HTTP input validation, config gates, and one-shot direct sends. |
 | `src/cli/` | Node `util.parseArgs` parsing/help, configuration, exclusive pidfile lifecycle, local queries/exports, and explicit HTTP/direct send dispatch. |
@@ -16,7 +16,7 @@ sends. It runs on Node.js >=20 with ESM and no application framework.
 ```text
 WhatsApp events -> daemon event queue -> store -> messages.jsonl (+ rotations)
                          |                         ^
-                         +-> contacts.json         | local query/export CLI
+                         +-> contacts.json / lid-map.json         | local query/export CLI
 
 wallfly send -> loopback POST /send -> SendService.sendWithAudit
         \----> --direct connection -----------> |
@@ -50,7 +50,15 @@ Live upserts use `syncType: "notify"`; history uses `"append"`. Protocol-only
 messages and status broadcasts are skipped. Text/captions and metadata are
 mapped; attachment bytes are not downloaded. Individual append failures are
 logged by category and not retried. The rest of the batch continues. Name cache
-updates atomically replace `contacts.json`; names in old records stay snapshots.
+updates atomically replace schema-v2 `contacts.json` (v1 remains readable); names
+in old records stay snapshots. Pushnames and message-key LID/phone pairs are
+harvested before deduplication, including from protocol-only messages. Saved auth
+LID records and future auth writes also feed schema-v1 `lid-map.json`. The pinned
+Baileys version exposes sender fields but omits lid-mapping from its key-store
+types; a narrow adapter reads these records without changing the dependency.
+Group discovery and metadata reads refresh participant JIDs/LIDs/ranks on connect
+and group events. Query-only transport methods do not use the send surface.
+`chats` and `who` read identity caches and retained archive fallbacks offline.
 Sockets use `syncFullHistory: true` by default. A daemon-lifetime in-memory set
 of successfully appended message IDs deduplicates live/history overlaps across
 reconnects, but does not load IDs from earlier process sessions. Each append

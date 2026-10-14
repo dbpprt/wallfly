@@ -375,3 +375,59 @@ test('direct mode refuses pairing/disconnect and drains credential saves before 
     assert.equal(emitter.listenerCount('creds.update'), 0);
   }
 });
+
+test('chats resolves archived unnamed DMs from current mappings, pushnames and group participants', async (t) => {
+  const { run, directory, store, records } = setup(t, false);
+  const { NameCache } = await import('../src/daemon/cache.js');
+  const lid = 'synthetic-person@lid';
+  const pn = 'synthetic-phone@s.whatsapp.net';
+  const cache = new NameCache(directory);
+  store.append({ ...records[0]!, chatJid: lid, senderJid: lid, chatName: null, pushName: null });
+  store.append({ ...records[1]!, chatJid: 'synthetic-unresolved@lid', chatName: null });
+  cache.groups([{ id: 'synthetic-shared@g.us', subject: 'synthetic-shared-name', participants: [{ id: pn, lid }] }]);
+  const phoneOnly = jsonLines((await run(['chats'])).stdout)[0] as { name: string | null; phone: string };
+  assert.equal(phoneOnly.name, null);
+  assert.equal(phoneOnly.phone, '+synthetic-phone');
+  cache.message({ key: { remoteJid: 'synthetic-shared@g.us', participant: lid },
+    pushName: 'synthetic-person-name', messageTimestamp: 100 });
+  const result = await run(['chats']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(jsonLines(result.stdout), [
+    { jid: lid, name: 'synthetic-person-name', phone: '+synthetic-phone', pushname: 'synthetic-person-name',
+      type: 'dm', count: 1, lastTs: records[0]!.ts },
+    { jid: 'synthetic-unresolved@lid', name: null, phone: null, pushname: null, type: 'dm', count: 1, lastTs: records[1]!.ts },
+  ]);
+});
+
+test('who reports aliases, phone, pushname timestamp and shared group ranks without a daemon', async (t) => {
+  const { run, directory } = setup(t, false);
+  const { NameCache } = await import('../src/daemon/cache.js');
+  const cache = new NameCache(directory);
+  const lid = 'synthetic-person@lid';
+  const pn = 'synthetic-phone@s.whatsapp.net';
+  cache.groups([{ id: 'synthetic-shared@g.us', subject: 'synthetic-shared-name', participants: [{ id: lid, jid: pn, lid, admin: 'admin' }] },
+    { id: 'synthetic-unrelated@g.us', participants: [{ id: 'synthetic-other@s.whatsapp.net' }] }]);
+  cache.message({ key: { remoteJid: lid, senderPn: pn }, pushName: 'synthetic-person-name', messageTimestamp: 100 });
+  const result = await run(['who', 'synthetic-person:2@lid']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    jid: lid, aliases: [lid, pn], name: 'synthetic-person-name', phone: '+synthetic-phone', phoneJid: pn,
+    pushname: 'synthetic-person-name', pushnameTs: 100000,
+    groups: [{ jid: 'synthetic-shared@g.us', name: 'synthetic-shared-name', rank: 'admin' }], count: 0, lastTs: null,
+  });
+  const phone = await run(['who', pn]);
+  assert.equal(JSON.parse(phone.stdout).groups.length, 1);
+  assert.equal((await run(['who', 'synthetic-unknown@lid'])).code, 3);
+  for (const args of [['who'], ['who', 'a', 'b'], ['who', 'invalid'], ['who', 'synthetic@lid', '--unknown']]) {
+    assert.equal((await run(args)).code, 1);
+  }
+});
+
+test('old archives provide pushname fallback for chats and who without mistaking owner names for recipients', async (t) => {
+  const { run, store, records } = setup(t, false);
+  const lid = 'synthetic-legacy@lid';
+  store.append({ ...records[0]!, chatJid: lid, senderJid: lid, chatName: null, pushName: 'synthetic-peer' });
+  store.append({ ...records[1]!, chatJid: lid, senderJid: 'synthetic-self@lid', fromMe: true, chatName: null, pushName: 'synthetic-self' });
+  assert.equal((JSON.parse((await run(['who', lid])).stdout) as { pushname: string }).pushname, 'synthetic-peer');
+  assert.equal((jsonLines((await run(['chats'])).stdout)[0] as { name: string }).name, 'synthetic-peer');
+});

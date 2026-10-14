@@ -226,7 +226,7 @@ export class DaemonService {
     if (!this.running) return;
     try {
       const socket = await this.factory({ authDirectory: this.authDirectory, markOnlineOnConnect: false,
-        log: (event) => this.log(event) });
+        log: (event) => this.log(event), observeLidMapping: (lid, pn) => this.cache.lidMap.observe(lid, pn) });
       if (!this.running) { socket.end(undefined); return; }
       this.socket = socket;
       this.on(socket, 'creds.update', () => socket.saveCredentials());
@@ -250,23 +250,52 @@ export class DaemonService {
           this.attempt = 0;
           this.removePairing();
           this.log('connection.open');
+          if (socket.groupFetchAllParticipating) {
+            try { this.cache.groups(Object.values(await socket.groupFetchAllParticipating())); }
+            catch { this.log('groups.discovery.failed'); }
+          }
+          await this.refreshGroups(socket);
         }
       });
       this.on(socket, 'contacts.upsert', (contacts) => this.cache.contacts(contacts));
       this.on(socket, 'contacts.update', (contacts) => this.cache.contacts(contacts));
-      this.on(socket, 'groups.upsert', (groups) => this.cache.groups(groups));
-      this.on(socket, 'groups.update', (groups) => this.cache.groups(groups));
+      const groupsChanged = async (groups: Partial<BaileysEventMap['groups.upsert'][number]>[]): Promise<void> => {
+        this.cache.groups(groups);
+        await this.refreshGroups(socket);
+      };
+      this.on(socket, 'groups.upsert', groupsChanged);
+      this.on(socket, 'groups.update', groupsChanged);
+      this.on(socket, 'group-participants.update', async ({ id }) => {
+        this.cache.groups([{ id }]);
+        await this.refreshGroups(socket);
+      });
+      this.on(socket, 'chats.phoneNumberShare', ({ lid, jid }) => this.cache.lidMap.observe(lid, jid));
+      this.on(socket, 'chats.upsert', async (chats) => {
+        this.cache.groups(chats.filter((chat) => chat.id.endsWith('@g.us'))
+          .map((chat) => ({ id: chat.id, ...(chat.name == null ? {} : { subject: chat.name }) })));
+        await this.refreshGroups(socket);
+      });
       this.on(socket, 'messages.upsert', ({ messages, type }) => this.append(messages, type, socket));
-      this.on(socket, 'messaging-history.set', ({ contacts, chats, messages }) => {
+      this.on(socket, 'messaging-history.set', async ({ contacts, chats, messages }) => {
         this.cache.contacts(contacts);
         this.cache.groups(chats.filter((chat) => chat.id.endsWith('@g.us'))
           .map((chat) => ({ id: chat.id, ...(chat.name == null ? {} : { subject: chat.name }) })));
         this.append(messages, 'append', socket);
+        await this.refreshGroups(socket);
       });
     } catch {
       this.detach();
       this.log('connection.failed');
       this.scheduleReconnect();
+    }
+  }
+
+  private async refreshGroups(socket: ListenerSocket): Promise<void> {
+    if (!socket.groupMetadata || this.state !== 'connected') return;
+    for (const jid of this.cache.knownGroups()) {
+      if (!this.running || this.socket !== socket) return;
+      try { this.cache.groups([await socket.groupMetadata(jid)]); }
+      catch { this.log('group.metadata.failed'); }
     }
   }
 
@@ -286,6 +315,8 @@ export class DaemonService {
   private append(messages: WAMessage[], type: 'notify' | 'append', socket: ListenerSocket): void {
     let recorded = 0;
     for (const message of messages) {
+      try { this.cache.message(message, socket.user?.id); }
+      catch { this.log('message.identity.failed'); }
       try {
         if (message.key.id && this.seenMessageIds.has(message.key.id)) continue;
         const record = mapMessage(message, type, this.cache, socket.user?.id);

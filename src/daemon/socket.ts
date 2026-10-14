@@ -1,10 +1,13 @@
-import type { BaileysEventMap, WAVersion } from '@whiskeysockets/baileys';
+import { dirname } from 'node:path';
+import type { BaileysEventMap, GroupMetadata, WAVersion } from '@whiskeysockets/baileys';
 import { privateDirectory, secureAuthFiles } from './files.js';
+import { LidMap, loadAuthMappings, observeAuthMappings } from './identity.js';
 import { bindSendTransport } from '../send/index.js';
 import type { SendTransport } from '../send/index.js';
 
 export type ListenerEvent = 'connection.update' | 'creds.update' | 'messages.upsert'
-  | 'contacts.upsert' | 'contacts.update' | 'groups.upsert' | 'groups.update' | 'messaging-history.set';
+  | 'contacts.upsert' | 'contacts.update' | 'groups.upsert' | 'groups.update' | 'messaging-history.set'
+  | 'group-participants.update' | 'chats.phoneNumberShare' | 'chats.upsert';
 
 /** Event transport plus an opaque outgoing port, invoked only by src/send. */
 export interface ListenerSocket {
@@ -14,6 +17,8 @@ export interface ListenerSocket {
   };
   readonly user: { id: string } | undefined;
   readonly outgoing: SendTransport;
+  groupMetadata?(jid: string): Promise<GroupMetadata>;
+  groupFetchAllParticipating?(): Promise<Record<string, GroupMetadata>>;
   saveCredentials(): Promise<void>;
   end(error: Error | undefined): void;
 }
@@ -24,6 +29,7 @@ export interface SocketOptions {
   /** Skip version discovery, including its network request. */
   version?: WAVersion;
   log?: (event: string) => void;
+  observeLidMapping?: (lid: string, pn: string) => void;
 }
 export type SocketFactory = (options: SocketOptions) => Promise<ListenerSocket>;
 
@@ -70,8 +76,16 @@ export async function createBaileysSocket(options: SocketOptions,
   const version = await resolveVersion(options, baileys);
   const { state, saveCreds } = await useMultiFileAuthState(options.authDirectory);
   secureAuthFiles(options.authDirectory);
+  let fallbackMap: LidMap | undefined;
+  const observe = options.observeLidMapping ?? ((lid: string, pn: string): void => {
+    fallbackMap ??= new LidMap(dirname(options.authDirectory));
+    fallbackMap.observe(lid, pn);
+  });
+  loadAuthMappings(options.authDirectory, observe);
   const originalSet = state.keys.set.bind(state.keys);
   state.keys.set = async (data) => {
+    // 6.7.23 exposes senderPn but omits lid-mapping from SignalDataSet's types.
+    observeAuthMappings((data as Record<string, unknown>)['lid-mapping'], observe);
     await originalSet(data);
     secureAuthFiles(options.authDirectory);
   };
@@ -87,6 +101,8 @@ export async function createBaileysSocket(options: SocketOptions,
     ev: socket.ev,
     outgoing: bindSendTransport(socket),
     get user() { return socket.user; },
+    groupMetadata: (jid) => socket.groupMetadata(jid),
+    groupFetchAllParticipating: () => socket.groupFetchAllParticipating(),
     saveCredentials: async () => {
       await saveCreds();
       secureAuthFiles(options.authDirectory);
