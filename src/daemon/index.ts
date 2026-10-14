@@ -223,7 +223,8 @@ export class DaemonService {
   private async connect(): Promise<void> {
     if (!this.running) return;
     try {
-      const socket = await this.factory({ authDirectory: this.authDirectory, markOnlineOnConnect: false });
+      const socket = await this.factory({ authDirectory: this.authDirectory, markOnlineOnConnect: false,
+        log: (event) => this.log(event) });
       if (!this.running) { socket.end(undefined); return; }
       this.socket = socket;
       this.on(socket, 'creds.update', () => socket.saveCredentials());

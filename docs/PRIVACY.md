@@ -73,6 +73,10 @@ authentication/key material is used in WhatsApp's linked-device protocol, and
 message content or identifiers already known to WhatsApp are exchanged as part
 of receiving or explicitly sending messages. Credentials are never deliberately
 uploaded to a separate wallfly service; they must still be protected locally.
+Before the first socket connection, Baileys fetches public protocol-version
+metadata from `raw.githubusercontent.com`. This request carries no chat content
+or auth data; GitHub receives ordinary connection metadata such as the IP address.
+The result (or bundled fallback) is cached until the process exits.
 The application logs lifecycle/error categories rather than chat/auth payloads;
 Baileys debug logging is disabled. Pairing output and CLI query/export/audit
 output are sensitive, so do not capture them in shared logs.

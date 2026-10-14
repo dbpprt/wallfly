@@ -38,6 +38,13 @@ auth at `~/.wallfly/auth/`, disables Baileys debug logging, and sets
 PNG is removed on connection, disconnection, or stop. CLI foreground and direct
 modes share an exclusive `wallfly.pid` lock; one writer per directory is supported.
 
+Before opening a socket, the factory fetches the current WhatsApp protocol
+version with `fetchLatestBaileysVersion` (10-second timeout) and passes it to
+`makeWASocket`. The resolved version is cached for the process, including across
+reconnects. Failed discovery uses Baileys' bundled version for the rest of the
+process and logs `socket.version.fallback`; restart to try discovery again.
+Tests can inject `SocketOptions.version` to skip discovery entirely.
+
 Incoming handlers run serially so name updates precede subsequent appends.
 Live upserts use `syncType: "notify"`; history uses `"append"`. Protocol-only
 messages and status broadcasts are skipped. Text/captions and metadata are
