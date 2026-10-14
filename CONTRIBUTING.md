@@ -8,10 +8,11 @@ then run:
 npm run lint
 npm run typecheck
 npm test
+npm run pack:check
 ```
 
 Tests use `node:test`, compile to ignored `dist/`, and must run offline. Mock
-the socket layer when transport is introduced; never contact WhatsApp in CI.
+the socket layer; never contact WhatsApp in CI.
 The listener pins Baileys and qrcode exactly. Inject the listener socket
 factory in daemon tests; do not instantiate the production socket.
 
@@ -45,13 +46,13 @@ The authoritative rules are in [AGENT_PROMPT.md](AGENT_PROMPT.md), quoted here:
 >    mode 0600, dir 0700). Schema is versioned; every record carries a `v` field.
 >    Sends get their own audit log (`sends.jsonl`: ts, jid, text sha256, kind).
 
-Only `src/send/` may import the Baileys send API when transport is introduced.
+Only `src/send/` may access the Baileys message, read-receipt, or presence APIs.
 The send audit records `ts`, `jid`, the text SHA-256 hash, and `kind`. If the
-audit append fails, the send must not leave the machine. Test this ordering
-offline when sending is implemented.
+audit append fails, the send must not leave the machine. Preserve the offline
+tests for this ordering.
 
 Document the full configuration opt-ins as `wallfly config set read_receipts true`
-and `wallfly config set presence true` when those commands are implemented.
+and `wallfly config set presence true`; restart to apply changes.
 
 ## PR checklist
 
@@ -66,3 +67,13 @@ and `wallfly config set presence true` when those commands are implemented.
 - [ ] Tests run offline and cover the changed boundaries.
 - [ ] Lint, strict typecheck, tests on Node 20 and 22, and Gitleaks pass.
 - [ ] Documentation describes any changed behavior or privacy implications.
+
+## Releases
+
+The package stays private; releases are GitHub tarballs, with no npm publication.
+Update package.json, the lockfile root version, and CHANGELOG.md together. After
+merging a reviewed PR and verifying main CI, a maintainer can push the matching
+`vVERSION` tag. The release workflow reruns lint, strict typecheck, offline tests,
+and pack sanity on Node 20 and 22, plus Gitleaks, before creating the GitHub
+Release with `wallfly-VERSION.tgz`. Tag/package version mismatches fail. Tagging
+is a separate maintainer action; opening a release-readiness PR does not release.

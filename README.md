@@ -9,27 +9,54 @@ daemon (via [Baileys](https://github.com/WhiskeySockets/Baileys)) that records
 the operator's own chats to a local store, exposes them through a documented
 CLI, and can **send** messages through an explicit, audited send surface.
 
-**The daemon, local store, CLI, and audited send surface are implemented.**
-
-All outgoing behavior belongs in `src/send/`, through an explicit
-operator or documented script action via `wallfly send` or local `POST /send`.
-The audit record is appended before the send executes; a failed
-append must prevent the send. There are no automatic, scheduled, or
-incoming-message-triggered sends.
-
 ## Status
 
-🚧 Under active construction — see the issue tracker.
+v0.1.0 includes the daemon, local JSONL archive, CLI, and audited
+text/image/document sends. Baileys is pinned to `6.7.23`; the store has zero
+runtime dependencies. The tag-release workflow produces a GitHub Release with
+an npm-compatible tarball; this project does not publish to npm.
 
-The JSONL store and Baileys listener are implemented with offline tests and CI.
-The CLI and send surface are implemented. Baileys is pinned
-to `6.7.23`; the store has zero runtime dependencies.
+## Limitations
+
+- **Unofficial client:** wallfly uses Baileys and is not affiliated with or
+  supported by WhatsApp/Meta. Protocol changes can break pairing or operation.
+  Unofficial clients may violate WhatsApp's terms and can lead to account
+  restrictions or bans. Use at your own risk; there is no ban protection.
+- **One account:** one linked account and one writer per data directory.
+  Multi-account operation is unsupported.
+- **Partial archive:** only messages delivered by the linked-device transport
+  are recorded. History may be incomplete or replayed; there is no deduplication,
+  edit/delete reconciliation, or guarantee of a complete backup. Disappearing
+  and view-once text/captions remain in the archive until local retention deletes
+  them. Incoming media bytes are not downloaded or archived.
+- **Local security:** files are private by permissions, not encrypted at rest.
+  The loopback API has no authentication; other local processes can send as
+  your linked account. No remote bind option exists.
+- **Operational limits:** rotation deletes older message files; the send audit
+  grows without rotation. A send timeout/failure may leave delivery uncertain;
+  there are no automatic retries. Offline tests do not certify live WhatsApp
+  compatibility or delivery.
+
+## Comparison
+
+These tools serve different workflows. Review each project's current release
+before choosing; this table compares their approach, not a compatibility test.
+
+| Choice | Approach | Local archive and explicit-send policy |
+| --- | --- | --- |
+| **wallfly** | Baileys linked-device daemon plus CLI; no browser required. | Versioned JSONL archive and query/export CLI; text/image/document sends require an explicit action and a synced audit record. No autonomous sends. |
+| [whatsapp-web.js](https://github.com/pedroslopez/whatsapp-web.js) | Node library controlling WhatsApp Web through Puppeteer. | Build your own application; archival, audit, and automation policy depend on that application. |
+| [whatscli](https://github.com/normen/whatscli) | Interactive terminal WhatsApp client. | Suits terminal chat use; wallfly's JSONL schema and audit-before-send contract are specific to wallfly. Check the chosen version's protocol support. |
+| **None (official WhatsApp clients only)** | Phone and official linked desktop/web clients. | No additional wallfly archive or send audit; avoids the unofficial-client risk introduced by these tools. |
 
 ## Quickstart
 
+For a source checkout, use Node 20.19+, 22.13+, or 24+ and Git:
+
 ```sh
+git clone https://github.com/dbpprt/wallfly.git
+cd wallfly
 npm ci
-npm run build
 npm link
 wallfly pair
 ```
@@ -44,12 +71,18 @@ reuse saved credentials. Both commands stay in the foreground. Without
 `npm link`, run `node bin/wallfly COMMAND`; `npm run daemon` builds and starts
 the same CLI. `npm ci` also builds via the prepare script.
 
+For a tagged release, download `wallfly-VERSION.tgz` from
+[GitHub Releases](https://github.com/dbpprt/wallfly/releases), then install it
+with `npm install --global ./wallfly-VERSION.tgz` (substitute the version).
+The tarball includes compiled code and needs Node >=20; no local build is required.
+
 ## CLI reference
 
 All commands support `-h` / `--help`, with flags and examples. The CLI uses
 Node's `util.parseArgs`; it adds no runtime dependencies. Defaults live in
-`~/.wallfly/config.json` (0600); the directory is 0700. Files and message data
-remain local. Examples below contain synthetic identifiers and text; substitute
+`~/.wallfly/config.json` (0600); the directory is 0700. Configuration and
+archived data stay on local disk; explicit sends and linked-device protocol
+traffic use WhatsApp. Examples below contain synthetic identifiers and text; substitute
 your recorded chat JIDs (`wallfly chats`) when operating your own account.
 Use `--` before a positional query starting with a dash.
 
@@ -123,7 +156,7 @@ request that action. Presence, when enabled, broadcasts available during an
 explicit send. Restart after changes, using the old port to stop the existing
 daemon if the pidfile is unavailable. Rotation deletes data beyond retention.
 
-### Explicit sends and audit log
+## Explicit sends and audit log
 
 `wallfly send` calls local `POST /send`; `--direct` uses `src/send/` with saved
 auth for one connection and send attempt, without starting a daemon. Stop the
@@ -144,7 +177,8 @@ locally to absolute paths before HTTP; files must be readable, nonempty regular
 files of at most 64 MiB (no symlinks). A media caption does not create an extra
 text send. There are no scheduled, automatic, or incoming-triggered sends.
 
-Before any outgoing operation, `src/send/` appends and syncs a private entry to
+Before any application message, receipt, or presence operation, `src/send/`
+appends and syncs a private entry to
 `~/.wallfly/sends.jsonl`: `{v:1, ts, jid, kind, textSha256, mediaPath}`. The CLI
 prints the **exact audit entry** returned by this request. The log stores the
 SHA-256 of text/caption, never its raw content; it records attempts, including
@@ -272,15 +306,63 @@ Each append uses one `O_APPEND` write call; `fsync: true` syncs the file before
 returning. A short write or I/O failure throws. Rotation is not a crash-atomic
 transaction, and multiple concurrent writer processes are unsupported.
 
+## FAQ
+
+**Is this an official WhatsApp client, and can it get my account banned?**
+wallfly is unofficial and uses a linked-device implementation. Account restrictions
+or bans are possible, even without automation; wallfly cannot prevent them.
+
+**Does wallfly reply automatically or schedule sends?**
+No. A human or script must explicitly call `wallfly send` or `POST /send`.
+Incoming events only update local storage. Receipt and presence opt-ins apply
+only within an explicit send, after its audit record is synced.
+
+**Can I search without connecting to WhatsApp?**
+Yes. `search`, `tail`, `chats`, `export`, and `sends` read local files and need
+no running daemon. `tail -f` waits for new local records.
+
+**Are messages or backups complete, encrypted, or synced to a cloud?**
+The archive contains what the linked device receives; it is not a complete
+backup. Incoming attachments are not archived. Files are not encrypted at
+rest, and wallfly has no telemetry or cloud sync. Protect exports and backups.
+
+**Why did enabling read receipts not mark a chat read?**
+The receipt gate only permits explicit `readKeys` in an HTTP send request.
+The CLI has no read-key flag. Enabling `presence` permits an available update
+on each explicit send. Restart the daemon after changing either setting.
+
+**How do I run it after closing my terminal?**
+Use the user systemd service above. `start` and `pair` stay in the foreground.
+Pair interactively first so the QR does not enter service logs.
+
+## Unlink and remove local data
+
+1. Stop the service: `systemctl --user disable --now wallfly.service` if
+   installed, or `wallfly stop` (Ctrl-C also stops a foreground daemon).
+   Stop any direct-send process before removing its auth files.
+2. On your phone, open WhatsApp **Settings > Linked devices** (Android:
+   menu **Linked devices**), select the session you linked for wallfly, and
+   choose **Log out**. This revokes the linked session.
+3. Delete `~/.wallfly/auth/` to prevent local credential reuse. To pair again,
+   run `wallfly pair` after removing the old auth.
+4. To erase all wallfly data, delete `~/.wallfly/`, including message rotations,
+   name cache, configuration, and send audit, plus any exports/backups stored
+   elsewhere. Unlinking alone does not erase these files or retract sent messages.
+
+See [PRIVACY.md](docs/PRIVACY.md) for data handling and
+[SECURITY.md](SECURITY.md) for reporting vulnerabilities privately.
+
 ## Development
 
-Requires Node.js >=20. CI checks Node 20 and 22.
+Requires Node.js >=20. Development tools require Node 20.19+, 22.13+, or 24+.
+CI checks Node 20 and 22.
 
 ```sh
 npm ci
 npm run lint
 npm run typecheck
 npm test
+npm run pack:check
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), the

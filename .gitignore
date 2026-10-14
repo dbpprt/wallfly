@@ -9,3 +9,8 @@ auth/
 *.jsonl
 *.jsonl.*
 coverage/
+logs/
+sends.jsonl
+*.tgz
+.pack-check-*/
+.release-tools/
