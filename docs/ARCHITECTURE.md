@@ -46,14 +46,18 @@ process and logs `socket.version.fallback`; restart to try discovery again.
 Tests can inject `SocketOptions.version` to skip discovery entirely.
 
 Incoming handlers run serially so name updates precede subsequent appends.
-Live upserts use `syncType: "notify"`; history uses `"append"`. Protocol-only
-messages and status broadcasts are skipped. Text/captions and metadata are
-mapped into schema v2. With `media_archival` ON (default), received media is
-streamed via Baileys `downloadMediaMessage` to private files, capped at 64 MiB
-before publication, and referenced by relative `mediaPath`. Declared oversized
-media is rejected before downloading. Archival failures retain metadata and
-log only `media.archive.failed`. Media files do not rotate with JSONL.
-Individual append failures are logged by category and not retried. The rest of the batch continues. Name cache
+Live upserts use `syncType: "notify"`; history uses `"append"`. Unrelated
+protocol-only messages and status broadcasts are skipped. Observed edits/revokes
+become v2 reconciliation records, including `messages.update` and buffered
+upsert forms. Text/captions and metadata are mapped into the same v2 schema.
+With `media_archival` ON (default), received media is streamed via Baileys
+`downloadMediaMessage` to private files, capped at 64 MiB before publication,
+and referenced by relative `mediaPath`. Declared oversized media is rejected
+before downloading. Archival failures retain metadata and log only
+`media.archive.failed`. Media files do not rotate with JSONL. Caption edits
+reuse the original media reference; reconciliation events do not redownload media.
+Individual append failures are logged by category and not retried. The rest
+of the batch continues. Name cache
 updates atomically replace schema-v2 `contacts.json` (v1 remains readable); names
 in old records stay snapshots. Pushnames and message-key LID/phone pairs are
 harvested before deduplication, including from protocol-only messages. Saved auth
@@ -102,12 +106,14 @@ The token is read per request so atomic rotation revokes old credentials immedia
 The send handler requires JSON and limits its body to 1 MiB.
 
 The data directory uses `0700`; store/auth/cache/config/audit files use `0600`.
-The JSONL message schema is v2 with optional `syncType` and `mediaPath`; old v1
-records remain readable. Readers skip and count corrupt records. Cursors identify a file and
+The JSONL message schema is v2 with optional `syncType` and `mediaPath`, extended
+with `reconciliation` and `targetMessageId` for edit/revoke events. Ordinary v2
+records and old v1 messages remain readable. Readers skip and count corrupt
+records. Cursors identify a file and
 byte offset and survive rotation while retained. Retention can expire a cursor.
 The default store rotates before exceeding 10 MiB, retaining five archives
-plus the current file. The store itself does not deduplicate history, reconcile edits/deletes,
-or expire disappearing messages. Rotation deletes older files and is not a
+plus the current file. Raw store APIs do not deduplicate history or expire
+disappearing messages. Rotation deletes older files and is not a
 crash-atomic transaction. Message appends are not fsynced by default; audit
 appends always are. The audit rotates at the same `maxBytes` threshold, keeping
 `audit_rotations` archives (default ten) plus the current file. Incomplete audit
@@ -119,6 +125,42 @@ restart. Query CLI commands read local retained files without a daemon.
 `wallfly open MESSAGE_ID` prints a validated local attachment path.
 Exports include media references and are private JSON/CSV files; an existing
 destination is refused.
+
+## Append-only reconciliation
+
+The daemon maps protocol `MESSAGE_EDIT` / `REVOKE`, `editedMessage` wrappers,
+and Baileys `messages.update` events into new records. It also handles buffered
+upserts with edited wrappers or revoke stubs. `messageContextInfo` may accompany
+edited content; metadata alone does not mark an ordinary message as edited.
+Reconciliation events extend the shared v2 schema (including optional `mediaPath`)
+with the ordinary metadata fields and add
+`reconciliation: "edit" | "revoke"` and `targetMessageId`; `body` is replacement
+text/caption for edits and empty for revokes. `messageId` identifies the transport
+event and can equal the target ID for updates. No existing line is rewritten
+or deleted. Successful overlapping upsert/update observations are deduplicated
+for the daemon lifetime using chat, target, kind, and (for edits) timestamp/text;
+original-message deduplication does not suppress edits reusing the original ID.
+
+`src/store/reconciliation.ts` builds a local view over a complete retained
+snapshot, keyed by chat JID and target message ID. It applies the last appended
+edit, adding `[edited]` to the displayed body. A revoke is terminal, renders
+`[deleted]`, and clears the displayed media kind and path. Edits retain the
+original attachment reference. Files and raw references remain intact, and
+`wallfly open` can still resolve an archived attachment. Original message metadata and
+append position remain intact. Reconciliations arriving before originals are
+held until an original is found; unmatched events are visible in raw reads.
+Search/tail/export filter this view after reconciliation, so an edit outside
+the query's time range still updates the original inside that range. JSON/CSV
+exports use the same projection. `--raw` bypasses both reconciliation and
+current display-name resolution, preserving archive fields and original text.
+`chats`/`who` exclude reconciliation events from message counts.
+
+Reconciled initial reads hold retained original entries and reconciliation state
+in memory; raw store iteration remains streaming with byte cursors. Follow mode
+retains message state and reads new events exclusively from its cursor, emitting
+the updated original row for each reconciliation. Retention can still expire
+the cursor. Observations absent from the archive cannot be inferred; the view
+is not a guarantee of WhatsApp conversation completeness or erasure of content.
 
 ## Build and release
 

@@ -5,7 +5,7 @@ import { LidMap, loadAuthMappings, observeAuthMappings } from './identity.js';
 import { bindSendTransport } from '../send/index.js';
 import type { SendTransport } from '../send/index.js';
 
-export type ListenerEvent = 'connection.update' | 'creds.update' | 'messages.upsert'
+export type ListenerEvent = 'connection.update' | 'creds.update' | 'messages.upsert' | 'messages.update'
   | 'contacts.upsert' | 'contacts.update' | 'groups.upsert' | 'groups.update' | 'messaging-history.set'
   | 'group-participants.update' | 'chats.phoneNumberShare' | 'chats.upsert';
 

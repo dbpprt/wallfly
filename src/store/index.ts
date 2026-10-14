@@ -8,7 +8,7 @@ import { validateRecord } from './schema.js';
 import type { MessageRecord } from './schema.js';
 
 export { validateRecord } from './schema.js';
-export type { MessageRecord } from './schema.js';
+export type { MessageRecord, ArchivedMessage, ReconciliationRecord } from './schema.js';
 
 export interface StoreOptions {
   directory?: string;
@@ -69,7 +69,7 @@ function missing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-function matches(record: MessageRecord, filters: Filters): boolean {
+export function matchesRecord(record: MessageRecord, filters: Filters): boolean {
   if (filters.chatJid !== undefined && record.chatJid !== filters.chatJid) return false;
   if (filters.senderJid !== undefined && record.senderJid !== filters.senderJid) return false;
   if (filters.from !== undefined && record.ts < filters.from) return false;
@@ -82,7 +82,7 @@ function matches(record: MessageRecord, filters: Filters): boolean {
   return true;
 }
 
-function checkFilters(filters: Filters): void {
+export function checkFilters(filters: Filters): void {
   for (const bound of [filters.from, filters.to]) {
     if (bound !== undefined && (!Number.isSafeInteger(bound) || bound < 0)) {
       throw new RangeError('Time bounds must be nonnegative Unix milliseconds.');
@@ -125,7 +125,9 @@ export class JsonlStore {
     const line = Buffer.from(`${JSON.stringify({ v, ts, receivedAt, chatJid, chatName,
       chatType, fromMe, senderJid, senderName, pushName, body, mediaType, messageId,
       ...(syncType === undefined ? {} : { syncType }),
-      ...(mediaPath === undefined ? {} : { mediaPath }) })}\n`);
+      ...(mediaPath === undefined ? {} : { mediaPath }),
+      ...(record.reconciliation === undefined ? {} : { reconciliation: record.reconciliation,
+        targetMessageId: record.targetMessageId }) })}\n`);
     let fd = this.openWriter();
     try {
       let size = fstatSync(fd).size;
@@ -287,7 +289,7 @@ export class JsonlStore {
           record = undefined;
         }
         if (!validateRecord(record)) stats.corruptLines++;
-        else if (matches(record, filters)) yield { record, cursor };
+        else if (matchesRecord(record, filters)) yield { record, cursor };
         fragments = [];
         length = 0;
         begin = end + 1;

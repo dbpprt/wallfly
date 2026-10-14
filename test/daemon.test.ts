@@ -13,6 +13,7 @@ import type { DaemonDependencies, DaemonOptions, ListenerSocket, SocketOptions }
 import type { ListenerEvent } from '../src/daemon/socket.js';
 import { printPairingQr } from '../src/daemon/pair.js';
 import { JsonlStore } from '../src/store/index.js';
+import type { MessageRecord } from '../src/store/index.js';
 import { SendService } from '../src/send/index.js';
 import { runCli } from '../src/cli/index.js';
 import { readControlToken } from '../src/daemon/token.js';
@@ -692,4 +693,140 @@ test('media gate OFF skips downloads and keeps mediaType; failed and oversized d
     else assert.deepEqual(readdirSync(join(root, 'media/1970-01')), []);
     assert.deepEqual(socket.outgoingCalls, []);
   }
+});
+test('maps protocol edits/revokes and edited wrappers with context metadata, rejecting invalid targets', (t) => {
+  const cache = new NameCache(directory(t));
+  const target = { remoteJid: 'test-chat@invalid', id: 'synthetic-target' };
+  const edit = message({ key: { ...target, id: 'synthetic-edit-event' }, message: {
+    messageContextInfo: { deviceListMetadataVersion: 2 },
+    protocolMessage: { type: 14, key: target, timestampMs: 456123,
+      editedMessage: { extendedTextMessage: { text: 'synthetic-edited' }, messageContextInfo: {} } },
+  } });
+  const mapped = mapMessage(edit, 'notify', cache, undefined, 900000)!;
+  assert.equal(mapped.v, 2);
+  assert.equal(mapped.reconciliation, 'edit');
+  assert.equal(mapped.targetMessageId, target.id);
+  assert.equal(mapped.messageId, 'synthetic-edit-event');
+  assert.equal(mapped.body, 'synthetic-edited');
+  assert.equal(mapped.ts, 456000);
+  const wrappedProtocol = mapMessage({ ...edit, message: { editedMessage: { message: edit.message! } } },
+    'notify', cache, undefined)!;
+  assert.equal(wrappedProtocol.targetMessageId, target.id);
+  assert.equal(wrappedProtocol.body, 'synthetic-edited');
+  const wrapped = mapMessage(message({ key: target, message: { ephemeralMessage: { message: {
+    editedMessage: { message: { conversation: '', messageContextInfo: {} } }, messageContextInfo: {},
+  } } } }), 'append', cache, undefined)!;
+  assert.equal(wrapped.reconciliation, 'edit');
+  assert.equal(wrapped.body, '');
+  const revoke = mapMessage(message({ message: { protocolMessage: { type: 0, key: target } } }),
+    'notify', cache, undefined)!;
+  assert.equal(revoke.reconciliation, 'revoke');
+  assert.equal(revoke.targetMessageId, target.id);
+  assert.equal(revoke.body, '');
+  for (const protocolMessage of [{ type: 14, editedMessage: { conversation: 'synthetic-edit' } },
+    { type: 0, key: {} }, { type: 14, key: target },
+    { type: 0, key: { ...target, remoteJid: 'synthetic-other@invalid' } }]) {
+    assert.equal(mapMessage(message({ message: { protocolMessage } }), 'notify', cache, undefined), null);
+  }
+  const ordinary = mapMessage(message({ message: { conversation: 'synthetic-normal', messageContextInfo: {} } }),
+    'notify', cache, undefined)!;
+  assert.equal(ordinary.v, 2);
+});
+
+test('archives edit/revoke updates after originals and deduplicates overlapping protocol events offline', async (t) => {
+  const { root, socket, service } = setup(t);
+  await service.start();
+  const original = message();
+  socket.emit('messages.upsert', { type: 'notify', messages: [original] });
+  await service.flush();
+  const prefix = readFileSync(join(root, 'messages.jsonl'));
+  const protocolEdit = message({ key: { ...original.key, id: 'synthetic-edit-event' }, message: {
+    protocolMessage: { type: 14, key: original.key, timestampMs: 456123,
+      editedMessage: { conversation: 'synthetic-new' } },
+  } });
+  socket.emit('messages.upsert', { type: 'notify', messages: [protocolEdit] });
+  socket.emit('messages.update', [{ key: original.key, update: {
+    message: { editedMessage: { message: { conversation: 'synthetic-new' } }, messageContextInfo: {} },
+    messageTimestamp: 456,
+  } }]);
+  // Another edit uses the original ID, so original-message deduplication must not suppress it.
+  socket.emit('messages.upsert', { type: 'notify', messages: [message({ messageTimestamp: 457,
+    message: { editedMessage: { message: { conversation: 'synthetic-newer' } } } })] });
+  socket.emit('messages.update', [{ key: original.key, update: {
+    message: null, messageStubType: 1, key: { ...original.key, id: 'synthetic-revoke-event' },
+  } }]);
+  socket.emit('messages.upsert', { type: 'notify', messages: [message({
+    key: { ...original.key, id: 'synthetic-revoke-event' },
+    message: { protocolMessage: { type: 0, key: original.key } },
+  })] });
+  socket.emit('messages.update', [{ key: original.key, update: { status: 3 } }]);
+  await service.flush();
+  const records = new JsonlStore({ directory: root }).filter().records;
+  assert.deepEqual(records.map((record) => record.reconciliation), [undefined, 'edit', 'edit', 'revoke']);
+  assert.equal(records[1]!.body, 'synthetic-new');
+  assert.equal(records[2]!.body, 'synthetic-newer');
+  assert.deepEqual(readFileSync(join(root, 'messages.jsonl')).subarray(0, prefix.length), prefix);
+  assert.equal(service.status().recordedMessages, 4);
+  assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('shared v2 media records reconcile captions without redownloads and preserve raw attachment references', async (t) => {
+  const { root, socket, service } = setup(t);
+  const download = t.mock.method(socket, 'downloadMedia', async () => (async function* () {
+    yield Buffer.from('synthetic-media');
+  })());
+  const query = async (args: string[]) => {
+    let stdout = ''; let stderr = '';
+    const code = await runCli(args, { directory: root, stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; } });
+    assert.equal(code, 0, stderr);
+    return stdout;
+  };
+  await service.start();
+  const original = message({ key: { remoteJid: 'test-chat@invalid', id: 'synthetic-captioned-image' },
+    message: { imageMessage: { mimetype: 'image/jpeg', caption: 'synthetic-original-caption' } } });
+  socket.emit('messages.upsert', { type: 'notify', messages: [original] });
+  await service.flush();
+  const store = new JsonlStore({ directory: root });
+  const archived = store.filter().records[0]!;
+  const prefix = readFileSync(store.path);
+  assert.equal(archived.v, 2);
+  assert.equal(archived.reconciliation, undefined);
+  assert.ok(archived.mediaPath);
+  // The history duplicate must be skipped before a second download is attempted.
+  socket.emit('messaging-history.set', { contacts: [], chats: [], messages: [original], isLatest: true });
+  const edit = message({ key: { ...original.key, id: 'synthetic-caption-edit' }, message: {
+    protocolMessage: { type: 14, key: original.key, timestampMs: 456000,
+      editedMessage: { imageMessage: { mimetype: 'image/jpeg', caption: 'synthetic-edited-caption' } } },
+  } });
+  socket.emit('messages.upsert', { type: 'notify', messages: [edit] });
+  socket.emit('messages.update', [{ key: original.key, update: { messageTimestamp: 456,
+    message: { editedMessage: { message: { imageMessage: { caption: 'synthetic-edited-caption' } } } },
+  } }]);
+  await service.flush();
+  assert.equal(download.mock.callCount(), 1);
+  assert.equal(store.filter().records.length, 2);
+  const edited = JSON.parse(await query(['search', 'synthetic-edited-caption', '--json'])) as MessageRecord[];
+  assert.equal(edited[0]!.v, 2);
+  assert.equal(edited[0]!.body, 'synthetic-edited-caption [edited]');
+  assert.equal(edited[0]!.mediaPath, archived.mediaPath);
+  const exported = join(root, 'synthetic-edited-media.json');
+  await query(['export', '--format', 'json', '--out', exported]);
+  assert.equal(JSON.parse(readFileSync(exported, 'utf8'))[0].mediaPath, archived.mediaPath);
+  assert.equal(JSON.parse(await query(['who', archived.chatJid])).count, 1);
+  assert.equal(JSON.parse((await query(['chats'])).trim()).count, 1);
+  socket.emit('messages.update', [{ key: original.key, update: { message: null, messageStubType: 1 } }]);
+  await service.flush();
+  const deleted = JSON.parse(await query(['search', '[deleted]', '--json'])) as MessageRecord[];
+  assert.equal(deleted[0]!.body, '[deleted]');
+  assert.equal(deleted[0]!.mediaPath, undefined);
+  const raw = JSON.parse(await query(['search', '', '--raw', '--json'])) as MessageRecord[];
+  assert.deepEqual(raw, store.filter().records);
+  assert.equal(raw[0]!.mediaPath, archived.mediaPath);
+  assert.equal(raw[0]!.body, 'synthetic-original-caption');
+  assert.deepEqual(readFileSync(store.path).subarray(0, prefix.length), prefix);
+  assert.equal(await query(['open', archived.messageId]), join(root, archived.mediaPath!) + '\n');
+  assert.equal(readFileSync(join(root, archived.mediaPath!), 'utf8'), 'synthetic-media');
+  assert.equal(download.mock.callCount(), 1);
+  assert.deepEqual(socket.outgoingCalls, []);
 });
