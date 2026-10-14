@@ -25,10 +25,14 @@ an npm-compatible tarball; this project does not publish to npm.
 - **One account:** one linked account and one writer per data directory.
   Multi-account operation is unsupported.
 - **Partial archive:** only messages delivered by the linked-device transport
-  are recorded. History may be incomplete or replayed; there is no deduplication,
-  edit/delete reconciliation, or guarantee of a complete backup. Disappearing
+  are recorded. History backfill is on by default, but may be incomplete.
+  Replayed message IDs are deduplicated within a daemon session, including
+  reconnects; replay after a process restart can still create duplicates.
+  There is no edit/delete reconciliation or guarantee of a complete backup. Disappearing
   and view-once text/captions remain in the archive until local retention deletes
-  them. Incoming media bytes are not downloaded or archived.
+  them. Incoming media bytes are not downloaded or archived; only text/captions
+  and metadata are stored. Very old media can appear with a `mediaType` and an
+  empty `body` when no caption is available.
 - **Local security:** files are private by permissions, not encrypted at rest.
   The loopback API has no authentication; other local processes can send as
   your linked account. No remote bind option exists.
@@ -75,6 +79,21 @@ For a tagged release, download `wallfly-VERSION.tgz` from
 [GitHub Releases](https://github.com/dbpprt/wallfly/releases), then install it
 with `npm install --global ./wallfly-VERSION.tgz` (substitute the version).
 The tarball includes compiled code and needs Node >=20; no local build is required.
+
+History backfill is enabled by default (`syncFullHistory: true`, with no
+configuration switch). After pairing, keep the daemon running: history arrives
+in waves over minutes to hours, depending on what WhatsApp delivers. Each wave
+logs `{"event":"history.wave","recorded":N}` to the daemon's stderr, where
+`N` counts newly stored messages; duplicate-only or empty waves report zero.
+These progress logs contain no message content or identifiers. Records retain
+`syncType: "append"` for history and `"notify"` for live messages.
+
+Media is not downloaded; the archive stores text/captions and metadata only.
+Budget roughly 0.5–1 KiB per short text record including JSON metadata, or about
+50–100 MiB for 100,000 messages; long text and names need more. Default rotation
+retains roughly 60 MiB (a 10 MiB current file plus five rotations), so a large
+backfill can delete earlier archived records. Increase `maxBytes` or
+`keepRotations` before pairing if you want to retain more history.
 
 ## CLI reference
 

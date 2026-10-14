@@ -55,6 +55,14 @@ test('SocketOptions.version reaches makeWASocket and skips discovery', async (t)
   assert.equal(socket.ev, rawSocket.ev);
 });
 
+test('sockets request full history by default, including reconnects', async (t) => {
+  const { create, options, dependencies, makeWASocket } = await setup(t);
+  const first = await create(options, dependencies);
+  first.end(undefined);
+  await create(options, dependencies);
+  assert.deepEqual(makeWASocket.mock.calls.map((call) => call.arguments[0].syncFullHistory), [true, true]);
+});
+
 test('discovery is shared during concurrent creation and cached across reconnects', async (t) => {
   const { create, options, dependencies, makeWASocket, fetchLatestBaileysVersion, log } = await setup(t);
   let release!: (value: VersionResult) => void;

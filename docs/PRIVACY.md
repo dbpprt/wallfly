@@ -20,10 +20,22 @@ protect against processes running as your user, root, or compromised backups.
 | `wallfly.pid` | PID used to keep foreground and direct modes from sharing auth writers; removed on normal exit. |
 | `pairing.png` | Temporary pairing QR, removed on connection, disconnection, or stop. A crash may leave it behind. Terminal QR output can persist in terminal/service logs. |
 
-The application does not archive incoming attachment bytes. It does record
+History backfill is on by default: sockets use `syncFullHistory: true`, with
+no configuration switch. After pairing, WhatsApp may deliver history in waves
+over minutes to hours; keep the daemon running to receive them. The archive
+stores text/captions and metadata only; incoming media is not downloaded or
+archived. Roughly 0.5–1 KiB per short text record (including JSON metadata)
+means about 50–100 MiB for 100,000 messages; long text and names need more.
+Default rotation retains roughly 60 MiB, so large backfills can delete earlier
+records. Adjust `maxBytes`/`keepRotations` before pairing to retain more.
+
+The application does record
 text/captions from disappearing or view-once wrappers; WhatsApp expiry,
 message edits, and deletion do not change existing archive records. History
-may be partial or duplicated. JSON/CSV exports contain archive content at the
+may be partial. Successfully recorded message IDs are deduplicated in memory
+for the daemon session, including reconnects; replay after a process restart
+can still create duplicates. Very old media can have a `mediaType` and an empty
+`body` when no caption is available. JSON/CSV exports contain archive content at the
 operator's chosen local path, use `0600`, and are not tracked or erased later
 by wallfly. A failed export may leave a partial file.
 
@@ -80,6 +92,9 @@ The result (or bundled fallback) is cached until the process exits.
 The application logs lifecycle/error categories rather than chat/auth payloads;
 Baileys debug logging is disabled. Pairing output and CLI query/export/audit
 output are sensitive, so do not capture them in shared logs.
+Each history wave logs `{"event":"history.wave","recorded":N}` to stderr,
+counting only successful new appends (zero for duplicate-only or empty waves).
+These progress logs contain no message content or identifiers.
 
 ## What leaves through explicit sends
 

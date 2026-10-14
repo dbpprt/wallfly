@@ -36,7 +36,7 @@ export interface DaemonDependencies {
   socketFactory?: SocketFactory;
   pairingOutput?: PairingOutput;
   store?: { append(record: MessageRecord): unknown };
-  log?: (event: string, details?: { attempt: number; delayMs: number }) => void;
+  log?: (event: string, details?: { attempt: number; delayMs: number } | { recorded: number }) => void;
 }
 
 export interface DaemonStatus {
@@ -83,6 +83,8 @@ export class DaemonService {
   private state: DaemonStatus['state'] = 'stopped';
   private attempt = 0;
   private recorded = 0;
+  // Keep successful IDs across socket reconnects for this service's lifetime.
+  private readonly seenMessageIds = new Set<string>();
 
   constructor(options: DaemonOptions = {}, dependencies: DaemonDependencies = {}) {
     validateOptions(options);
@@ -202,7 +204,7 @@ export class DaemonService {
     await this.events;
   }
 
-  private log(event: string, details?: { attempt: number; delayMs: number }): void {
+  private log(event: string, details?: Parameters<NonNullable<DaemonDependencies['log']>>[1]): void {
     try { this.logger(event, details); } catch { /* Logging must not break reconnect or event handling. */ }
   }
 
@@ -282,12 +284,20 @@ export class DaemonService {
   }
 
   private append(messages: WAMessage[], type: 'notify' | 'append', socket: ListenerSocket): void {
+    let recorded = 0;
     for (const message of messages) {
       try {
+        if (message.key.id && this.seenMessageIds.has(message.key.id)) continue;
         const record = mapMessage(message, type, this.cache, socket.user?.id);
-        if (record) { this.store.append(record); this.recorded++; }
+        if (record) {
+          this.store.append(record);
+          this.seenMessageIds.add(record.messageId);
+          this.recorded++;
+          recorded++;
+        }
       } catch { this.log('message.append.failed'); }
     }
+    if (type === 'append') this.log('history.wave', { recorded });
   }
 
   private scheduleReconnect(): void {

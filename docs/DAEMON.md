@@ -54,6 +54,13 @@ uses the same CLI lifecycle. See the README for configuration and systemd.
 
 ## Persistence and reconnect
 
+Sockets request full history by default (`syncFullHistory: true`, with no
+configuration switch). After pairing, keep the daemon running for history
+waves, which may arrive over minutes to hours. Each append wave, including
+`messaging-history.set`, logs `{"event":"history.wave","recorded":N}` to
+stderr. The count includes only successful new appends, can be zero, and reveals
+no message content or identifiers.
+
 `messages.upsert` records are mapped into the store's schema v1 and appended
 with `syncType: "notify"` for live events or `"append"` for history events.
 `messaging-history.set` also records history as `"append"`. Old v1 records
@@ -66,9 +73,12 @@ a participant identifier; own messages need the linked account identifier.
 Text, extended text, ephemeral/view-once wrappers, and image/video/document
 captions are mapped. Audio and sticker messages retain their media kind.
 Attachment bytes are never downloaded by the application. Other recognized
-content kinds can have an empty body. The append-only archive does not deduplicate
-history replays, implement message edits/deletes, or remove archived disappearing
-messages; retention follows the JSONL store's rotation policy.
+content kinds can have an empty body. Successfully recorded message IDs are
+deduplicated in memory for the daemon session, including reconnects. The set
+grows with the session's unique messages and is lost on process restart, so
+replays after restart can still create duplicates. The append-only archive does
+not implement message edits/deletes or remove archived disappearing messages;
+retention follows the JSONL store's rotation policy.
 
 Contact upserts/updates, group upserts/updates, and history names update
 `~/.wallfly/contacts.json` (mode `0600`). The file is atomically replaced and
