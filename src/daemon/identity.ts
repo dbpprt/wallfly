@@ -6,6 +6,12 @@ export function normalizedJid(jid: string): string {
   return jid.replace(/:\d+(?=@)/, '');
 }
 
+/** The same destination syntax for explicit sends and operator aliases. */
+export function validJid(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 256
+    && /^[^@\s:]+@(?:s\.whatsapp\.net|g\.us|lid)$/.test(value);
+}
+
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -40,8 +40,8 @@ export function mapMessage(
     && !content.locationMessage && !content.liveLocationMessage && !content.reactionMessage
     && !content.pollCreationMessage && !content.pollCreationMessageV2 && !content.pollCreationMessageV3) return null;
   return {
-    v: 1, ts, receivedAt, chatJid, chatName: cache.get(chatJid), chatType: group ? 'group' : 'dm',
-    fromMe: key.fromMe ?? false, senderJid, senderName: cache.get(senderJid),
+    v: 1, ts, receivedAt, chatJid, chatName: cache.observedName(chatJid), chatType: group ? 'group' : 'dm',
+    fromMe: key.fromMe ?? false, senderJid, senderName: cache.observedName(senderJid),
     pushName: message.pushName ?? null, body: text ?? media?.[1] ?? '',
     mediaType: media?.[0] ?? null, messageId: key.id, syncType,
   };

@@ -117,6 +117,9 @@ Use `--` before a positional query starting with a dash.
 | `sends` | `--limit N` (default 100): latest audit records as JSONL in append order. | `wallfly sends --limit 20` |
 | `chats` | Recorded chats as JSONL: `jid`, `name`, `phone`, `pushname`, `type`, `count`, `lastTs` (Unix ms). | `wallfly chats` |
 | `who JID` | Known identity as JSON: aliases, phone, pushname and timestamp, cached shared groups and ranks, archived count/lastTs. | `wallfly who synthetic-person@lid` |
+| `alias set JID NAME` | Persist a local manual display name; JID validation matches `send`. Prints JSON with `manual: true`. | `wallfly alias set synthetic-person@lid "Synthetic Display Name"` |
+| `alias list` | Manual aliases as JSONL, sorted by JID; exit 3 when empty. | `wallfly alias list` |
+| `alias remove JID` | Delete the exact JID's manual entry; exit 3 if absent. | `wallfly alias remove synthetic-person@lid` |
 | `search QUERY` | `--chat JID`, `--sender JID`, `--from ISO`, `--to ISO`, `--regex`, `--limit N`, `--json`. | `wallfly search synthetic --chat synthetic-chat@invalid --json` |
 | `tail` | `-n N` (default 10), `-f` / `--follow`, `--chat JID`. JSONL output. | `wallfly tail -n 20 -f --chat synthetic-chat@invalid` |
 | `export` | `--chat JID`, `--from ISO`, `--to ISO`, required `--format json\|csv`, `--out FILE`. | `wallfly export --format csv --out ./messages.csv` |
@@ -127,10 +130,11 @@ print `[]`; empty exports create `[]` or a CSV header and exit 3. A following
 tail stays running even if initially empty and exits 0 on Ctrl-C. Counts and
 limits must be nonnegative integers; a limit of zero produces no results.
 
-Search, tail, chats, who, sends, and export read local files without a running daemon.
+Search, tail, chats, who, alias, sends, and export use local files without a running daemon.
 Message reads include retained rotations in append order. Search defaults to a
 case-sensitive substring and readable lines with ISO time, chat, sender, and
-JSON-escaped body. `--json` emits an array of complete schema records. `--regex`
+JSON-escaped body. `--json` emits an array of records with current display labels
+and optional manual-name markers; exports retain stored schema records. `--regex`
 treats the query as a JavaScript regex source (no slash delimiters or flags).
 All filters combine with AND; time bounds are inclusive message timestamps,
 formatted as ISO datetimes with a timezone. Search limits select the first N
@@ -191,7 +195,31 @@ wallfly who synthetic-person@lid
 `who` accepts a LID or phone JID, removes device suffixes, and prints known aliases,
 name, phone/phoneJid, pushname/pushnameTs, cached shared groups (`jid`, `name`,
 participant `rank`), and archived message count/lastTs. It reads local files without
-a running daemon. Unknown identities print null fields and empty groups (exit 3).
+a running daemon. Unknown names fall back to the raw JID; other unknown fields
+are null or empty (exit 3).
+
+Manually name an unnamed chat, including a privacy-protected LID, with:
+
+```sh
+wallfly alias set synthetic-person@lid "Synthetic Display Name"
+wallfly alias list
+wallfly alias remove synthetic-person@lid
+```
+
+This operator-curated identity layer works offline and takes effect while the
+daemon runs, without restarting. `chats`, `who`, `search`, and `tail` prefer a
+manual alias, then a pushname, then a cached contact/group name, then the raw JID.
+An alias also applies to observed linked LID/phone JIDs. Each entry belongs to the
+exact JID supplied; if linked JIDs have separate aliases, the queried JID's entry
+wins. Remove each entry with its original JID to clear them all.
+
+Manual names carry `"manual": true` in JSON, including shared group labels in
+`who`. Search and tail retain original `chatJid`/`senderJid` and resolve
+`chatName`/`senderName` at display time; `chatManual` and `senderManual` mark the
+affected fields, with `manual: true` when either is manual. Readable search shows
+quoted names and `[manual]`. Filters still use JIDs and message text. Archive
+records and exports retain transport name snapshots; manual names stay in the
+removable cache section.
 
 **The phone's address book is NOT accessible to linked devices.** wallfly can
 only use facts WhatsApp delivers: observed LID↔phone mappings from auth records,
@@ -209,14 +237,18 @@ cached membership: failed/offline refreshes can leave stale data.
 
 Observed mappings persist in `~/.wallfly/lid-map.json` (`v: 1`). Names, pushnames
 with Unix millisecond timestamps, and a `participants` section persist in
-`~/.wallfly/contacts.json` (`v: 2`); existing v1 name caches are read and upgraded
+`~/.wallfly/contacts.json` (`v: 3`), alongside an `aliases` section of
+`JID: { "name": "…", "manual": true }` entries; existing v1/v2 caches are read and upgraded
 on the next update. Both files are atomically replaced, use `0600`, and stay local.
 Pushnames bind to the sender's known phone and LID aliases, including names learned
 in groups. The newest message timestamp wins; equal timestamps use the last writer,
 and undated messages use receipt time. Older history cannot replace a newer name.
 Duplicate and protocol-only messages can still supply identity facts. Message
-archive records remain append-only snapshots; `chats`/`who` consult newer cache facts
+archive records remain append-only snapshots; display commands consult newer cache facts
 and use retained archive pushnames as a fallback for earlier installations.
+Cache updates use a brief private `contacts.json.lock` to preserve alias edits
+during daemon writes. If an interrupted writer leaves this lock, stop wallfly
+and any alias commands before removing the lock and retrying.
 
 ## Explicit sends and audit log
 
@@ -380,7 +412,7 @@ Incoming events only update local storage. Receipt and presence opt-ins apply
 only within an explicit send, after its audit record is synced.
 
 **Can I search without connecting to WhatsApp?**
-Yes. `search`, `tail`, `chats`, `who`, `export`, and `sends` read local files and need
+Yes. `search`, `tail`, `chats`, `who`, `alias`, `export`, and `sends` use local files and need
 no running daemon. `tail -f` waits for new local records.
 
 **Are messages or backups complete, encrypted, or synced to a cloud?**

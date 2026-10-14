@@ -20,6 +20,9 @@ import { handleSendRequest } from '../src/send/http.js';
 import { directSend } from '../src/send/direct.js';
 import { lockPid } from '../src/cli/lifecycle.js';
 import type { ListenerSocket } from '../src/daemon/socket.js';
+import { NameCache } from '../src/daemon/cache.js';
+import { validJid } from '../src/daemon/identity.js';
+import { validateRequest } from '../src/send/index.js';
 
 // Every identifier, name, message, and media byte below is synthetic.
 function setup(t: TestContext, seeded = true) {
@@ -65,7 +68,8 @@ test('global and every command help contain options, examples and exit codes', a
 });
 
 test('search combines every filter across rotations and supports regex, limits and readable output', async (t) => {
-  const { run, records } = setup(t);
+  const { run, records: archived } = setup(t);
+  const records = archived.map((record) => ({ ...record, senderName: record.senderJid }));
   const search = async (flags: string[]) => {
     const result = await run(['search', ...flags, '--json']);
     assert.equal(result.code, 0, result.stderr);
@@ -91,7 +95,8 @@ test('search combines every filter across rotations and supports regex, limits a
 });
 
 test('tail filters before taking the last N and follows appends through rotation without replay', async (t) => {
-  const { run, records, store } = setup(t);
+  const { run, records: archived, store } = setup(t);
+  const records = archived.map((record) => ({ ...record, senderName: record.senderJid }));
   assert.deepEqual(jsonLines((await run(['tail', '-n', '2', '--chat', 'synthetic-a@invalid'])).stdout), records.slice(2));
   assert.deepEqual(jsonLines((await run(['tail', '-n', '10'])).stdout), records);
   assert.equal((await run(['tail', '-n', '0'])).code, 3);
@@ -122,7 +127,7 @@ test('empty follow starts successfully and later prints the first record', async
   await eventually(() => output.length > 0);
   controller.abort();
   assert.equal((await following).code, 0);
-  assert.deepEqual(jsonLines(output), [records[0]]);
+  assert.deepEqual(jsonLines(output), [{ ...records[0], senderName: records[0]!.senderJid }]);
 });
 
 test('export JSON and CSV preserve schema/content, filters, permissions and existing files', async (t) => {
@@ -386,7 +391,7 @@ test('chats resolves archived unnamed DMs from current mappings, pushnames and g
   store.append({ ...records[1]!, chatJid: 'synthetic-unresolved@lid', chatName: null });
   cache.groups([{ id: 'synthetic-shared@g.us', subject: 'synthetic-shared-name', participants: [{ id: pn, lid }] }]);
   const phoneOnly = jsonLines((await run(['chats'])).stdout)[0] as { name: string | null; phone: string };
-  assert.equal(phoneOnly.name, null);
+  assert.equal(phoneOnly.name, lid);
   assert.equal(phoneOnly.phone, '+synthetic-phone');
   cache.message({ key: { remoteJid: 'synthetic-shared@g.us', participant: lid },
     pushName: 'synthetic-person-name', messageTimestamp: 100 });
@@ -395,7 +400,7 @@ test('chats resolves archived unnamed DMs from current mappings, pushnames and g
   assert.deepEqual(jsonLines(result.stdout), [
     { jid: lid, name: 'synthetic-person-name', phone: '+synthetic-phone', pushname: 'synthetic-person-name',
       type: 'dm', count: 1, lastTs: records[0]!.ts },
-    { jid: 'synthetic-unresolved@lid', name: null, phone: null, pushname: null, type: 'dm', count: 1, lastTs: records[1]!.ts },
+    { jid: 'synthetic-unresolved@lid', name: 'synthetic-unresolved@lid', phone: null, pushname: null, type: 'dm', count: 1, lastTs: records[1]!.ts },
   ]);
 });
 
@@ -430,4 +435,109 @@ test('old archives provide pushname fallback for chats and who without mistaking
   store.append({ ...records[1]!, chatJid: lid, senderJid: 'synthetic-self@lid', fromMe: true, chatName: null, pushName: 'synthetic-self' });
   assert.equal((JSON.parse((await run(['who', lid])).stdout) as { pushname: string }).pushname, 'synthetic-peer');
   assert.equal((jsonLines((await run(['chats'])).stdout)[0] as { name: string }).name, 'synthetic-peer');
+});
+
+test('alias set/list/remove roundtrip is local, supports quoted names and survives fresh file reads', async (t) => {
+  const { run, directory } = setup(t, false);
+  const jid = 'synthetic-person@lid';
+  const offline = { fetch: async () => assert.fail('Alias operation must never contact the daemon') };
+  assert.equal((await run(['alias', 'list'], offline)).code, 3);
+  const entry = { jid, name: 'Synthetic Display Name', manual: true };
+  const set = await run(['alias', 'set', jid, entry.name], offline);
+  assert.equal(set.code, 0, set.stderr);
+  assert.deepEqual(JSON.parse(set.stdout), entry);
+  assert.deepEqual(jsonLines((await run(['alias', 'list'], offline)).stdout), [entry]);
+  assert.deepEqual(new NameCache(directory).listAliases(), [entry]);
+  assert.equal(statSync(join(directory, 'contacts.json')).mode & 0o777, 0o600);
+  assert.equal((await run(['alias', 'set', jid, 'synthetic-replaced'], offline)).code, 0);
+  assert.equal((JSON.parse((await run(['who', jid])).stdout)).name, 'synthetic-replaced');
+  assert.equal((await run(['who', jid])).code, 0);
+  assert.equal((await run(['alias', 'remove', jid], offline)).code, 0);
+  assert.equal((await run(['alias', 'remove', jid], offline)).code, 3);
+  assert.equal((await run(['alias', 'list'], offline)).code, 3);
+  assert.deepEqual(new NameCache(directory).listAliases(), []);
+  assert.equal((await run(['who', jid])).code, 3);
+});
+
+test('alias rejects exactly the same invalid JIDs as send and rejects invalid argument counts/names', async (t) => {
+  const { run, directory } = setup(t, false);
+  for (const jid of ['invalid', 'synthetic@invalid', 'synthetic@broadcast', 'synthetic:2@lid',
+    'synthetic @lid', '@lid', 'synthetic@@lid', `${'x'.repeat(253)}@lid`]) {
+    assert.equal(validJid(jid), false);
+    assert.throws(() => validateRequest({ jid, text: 'synthetic' }));
+    assert.equal((await run(['alias', 'set', jid, 'synthetic-name'])).code, 1);
+    assert.equal((await run(['alias', 'remove', jid])).code, 1);
+  }
+  for (const jid of ['synthetic@lid', 'synthetic@g.us', 'synthetic@s.whatsapp.net']) {
+    assert.equal(validJid(jid), true);
+    assert.doesNotThrow(() => validateRequest({ jid, text: 'synthetic' }));
+    assert.equal((await run(['alias', 'set', jid, 'synthetic-name'])).code, 0);
+  }
+  const before = readFileSync(join(directory, 'contacts.json'), 'utf8');
+  for (const args of [['alias'], ['alias', 'unknown'], ['alias', 'list', 'extra'],
+    ['alias', 'set', 'synthetic@lid'], ['alias', 'set', 'synthetic@lid', 'name', 'extra'],
+    ['alias', 'remove'], ['alias', 'remove', 'synthetic@lid', 'extra'],
+    ['alias', 'set', 'synthetic@lid', ''], ['alias', 'set', 'synthetic@lid', '  '],
+    ['alias', 'set', 'synthetic@lid', 'synthetic\0name']]) {
+    assert.equal((await run(args)).code, 1);
+    assert.equal(readFileSync(join(directory, 'contacts.json'), 'utf8'), before);
+  }
+});
+
+test('chats, who, search and tail prefer aliases and mark manual chat/sender labels without rewriting archives', async (t) => {
+  const { run, directory, store, records } = setup(t, false);
+  const jid = 'synthetic-person@lid';
+  const pn = 'synthetic-phone@s.whatsapp.net';
+  const group = 'synthetic-group@g.us';
+  const cache = new NameCache(directory);
+  cache.groups([{ id: group, subject: 'synthetic-group-derived', participants: [{ id: jid, jid: pn, lid: jid }] }]);
+  const dm = { ...records[0]!, chatJid: jid, senderJid: jid,
+    chatName: 'synthetic-archived-derived', senderName: 'synthetic-archived-derived', pushName: 'synthetic-archived-push' };
+  const groupRecord = { ...records[1]!, chatJid: group, chatType: 'group' as const, senderJid: jid,
+    chatName: 'synthetic-archived-group', pushName: 'synthetic-archived-push' };
+  store.append(dm); store.append(groupRecord);
+  // Archive pushnames precede even a current derived label.
+  cache.contacts([{ id: jid, name: 'synthetic-current-derived' }]);
+  for (const command of [['chats'], ['who', jid]]) {
+    assert.equal((jsonLines((await run(command)).stdout)[0] as { name: string }).name, 'synthetic-archived-push');
+  }
+  cache.message({ key: { remoteJid: jid, senderPn: pn }, pushName: 'synthetic-current-push', messageTimestamp: 100 });
+  for (const command of [['chats'], ['who', jid]]) {
+    assert.equal((jsonLines((await run(command)).stdout)[0] as { name: string }).name, 'synthetic-current-push');
+  }
+  assert.equal((await run(['alias', 'set', pn, 'Synthetic Manual Person'])).code, 0);
+  assert.equal((await run(['alias', 'set', group, 'Synthetic Manual Group'])).code, 0);
+  const chats = jsonLines((await run(['chats'])).stdout) as { name: string; manual: boolean }[];
+  assert.deepEqual(chats.map(({ name, manual }) => ({ name, manual })), [
+    { name: 'Synthetic Manual Person', manual: true }, { name: 'Synthetic Manual Group', manual: true },
+  ]);
+  const who = JSON.parse((await run(['who', jid])).stdout);
+  assert.equal(who.name, 'Synthetic Manual Person');
+  assert.equal(who.manual, true);
+  assert.equal(who.pushname, 'synthetic-current-push');
+  assert.equal(who.groups[0].name, 'Synthetic Manual Group');
+  assert.equal(who.groups[0].manual, true);
+  for (const args of [['search', 'synthetic', '--json'], ['tail']]) {
+    const result = await run(args);
+    assert.equal(result.code, 0, result.stderr);
+    const displayed = args[0] === 'search' ? JSON.parse(result.stdout) : jsonLines(result.stdout);
+    assert.equal(displayed[0].chatJid, jid);
+    assert.equal(displayed[0].chatName, 'Synthetic Manual Person');
+    assert.equal(displayed[0].senderName, 'Synthetic Manual Person');
+    assert.equal(displayed[1].chatName, 'Synthetic Manual Group');
+    for (const record of displayed) {
+      assert.equal(record.manual, true);
+      assert.equal(record.chatManual, true);
+      assert.equal(record.senderManual, true);
+    }
+  }
+  const readable = await run(['search', 'synthetic']);
+  assert.match(readable.stdout, /"Synthetic Manual Person" \[manual\]/);
+  assert.match(readable.stdout, /"Synthetic Manual Group" \[manual\]/);
+  assert.equal((await run(['alias', 'remove', pn])).code, 0);
+  assert.equal(JSON.parse((await run(['who', jid])).stdout).name, 'synthetic-current-push');
+  assert.deepEqual(store.filter().records, [dm, groupRecord]);
+  const exported = join(directory, 'synthetic-export.json');
+  assert.equal((await run(['export', '--format', 'json', '--out', exported])).code, 0);
+  assert.deepEqual(JSON.parse(readFileSync(exported, 'utf8')), [dm, groupRecord]);
 });

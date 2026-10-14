@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import type { WASocket, WAMessageKey } from '@whiskeysockets/baileys';
 import { privateDirectory } from '../daemon/files.js';
+import { validJid } from '../daemon/identity.js';
 
 export interface SendRequest {
   jid: string;
@@ -69,14 +70,9 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function jid(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 256
-    && /^[^@\s:]+@(?:s\.whatsapp\.net|g\.us|lid)$/.test(value);
-}
-
 export function validateRequest(value: unknown): SendRequest {
   const fail = (): never => { throw new SendError(400, 'Invalid send request.'); };
-  if (!object(value) || !jid(value.jid)
+  if (!object(value) || !validJid(value.jid)
     || Object.keys(value).some((key) => !['jid', 'text', 'image', 'document', 'caption', 'readKeys'].includes(key))) return fail();
   const kinds = ['text', 'image', 'document'].filter((key) => value[key] !== undefined);
   if (kinds.length !== 1) return fail();
@@ -89,8 +85,8 @@ export function validateRequest(value: unknown): SendRequest {
     for (const key of value.readKeys) {
       if (!object(key) || key.remoteJid !== value.jid || typeof key.id !== 'string' || !key.id.trim()
         || (key.fromMe !== undefined && key.fromMe !== false)
-        || (key.participant !== undefined && !jid(key.participant))
-        || (value.jid.endsWith('@g.us') && !jid(key.participant))
+        || (key.participant !== undefined && !validJid(key.participant))
+        || (value.jid.endsWith('@g.us') && !validJid(key.participant))
         || Object.keys(key).some((name) => !['id', 'remoteJid', 'participant', 'fromMe'].includes(name))) return fail();
     }
   }

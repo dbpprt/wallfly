@@ -13,6 +13,7 @@ import { foreground, lockPid, terminatePid } from './lifecycle.js';
 import type { DaemonFactory } from './lifecycle.js';
 import { auditEntries, exportRecords, tail } from './data.js';
 import { NameCache, normalizedJid } from '../daemon/cache.js';
+import { displayRecord } from './identity.js';
 
 export interface CliDependencies {
   directory?: string;
@@ -27,7 +28,7 @@ const string = { type: 'string' } as const;
 const boolean = { type: 'boolean' } as const;
 const dates = { from: string, to: string };
 const options: Record<string, NonNullable<ParseArgsConfig['options']>> = {
-  start: {}, stop: {}, status: {}, pair: {}, config: {}, chats: {}, who: {},
+  start: {}, stop: {}, status: {}, pair: {}, config: {}, alias: {}, chats: {}, who: {},
   send: { to: string, text: string, image: string, caption: string, document: string, direct: boolean },
   sends: { limit: string },
   search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean },
@@ -70,7 +71,8 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     const values = parsed.values as Record<string, string | boolean | undefined>;
     const str = (name: string): string | undefined => values[name] as string | undefined;
     const positionals = parsed.positionals;
-    if (command !== 'config' && positionals.length !== (command === 'search' || command === 'who' ? 1 : 0)) {
+    if (command !== 'config' && command !== 'alias'
+      && positionals.length !== (command === 'search' || command === 'who' ? 1 : 0)) {
       throw new Error('Unexpected or missing positional argument.');
     }
     if (!dependencies.signal) {
@@ -101,6 +103,23 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
         print(setConfig(directory, key, value)[configKey(key)]); return 0;
       }
       throw new Error('Use config get [KEY] or config set KEY VALUE.');
+    }
+    if (command === 'alias') {
+      const [action, jid, name] = positionals;
+      const cache = new NameCache(directory);
+      if (action === 'list' && positionals.length === 1) {
+        const aliases = cache.listAliases();
+        aliases.forEach(print); return aliases.length ? 0 : 3;
+      }
+      if (action === 'set' && positionals.length === 3 && jid !== undefined && name !== undefined) {
+        print(cache.setAlias(jid, name)); return 0;
+      }
+      if (action === 'remove' && positionals.length === 2 && jid !== undefined) {
+        const removed = cache.removeAlias(jid);
+        if (removed) print({ jid, removed: true });
+        return removed ? 0 : 3;
+      }
+      throw new Error('Use alias set JID NAME, alias list, or alias remove JID.');
     }
     if (command === 'start' || command === 'pair') {
       await foreground({ ...config, directory }, signal, dependencies.daemonFactory); return 0;
@@ -164,7 +183,8 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     if (command === 'who') {
       const jid = positionals[0]!;
       if (!/^[^\s@]+@[^\s@]+$/.test(jid)) throw new Error('who requires a JID.');
-      const identity = new NameCache(directory).identity(jid);
+      const cache = new NameCache(directory);
+      const identity = cache.identity(jid);
       let count = 0;
       let lastTs: number | null = null;
       let archivedName: string | null = null;
@@ -182,12 +202,13 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
           archivedPushnameTs = record.ts;
         }
       }
-      print({ ...identity, name: identity.name ?? archivedName ?? archivedPushname,
+      print({ ...identity, ...cache.display(identity.jid, archivedPushname, archivedName),
         pushname: identity.pushname ?? archivedPushname,
         pushnameTs: identity.pushnameTs ?? (archivedPushnameTs < 0 ? null : archivedPushnameTs), count, lastTs });
       return count || identity.name || identity.phone || identity.groups.length || archivedPushname ? 0 : 3;
     }
-    if (command === 'tail') return await tail(store, integer(str('n'), 10), filters, !!values.follow, signal, print);
+    if (command === 'tail') return await tail(store, integer(str('n'), 10), filters, !!values.follow, signal,
+      (record) => print(displayRecord(new NameCache(directory), record)));
     if (command === 'export') {
       const format = str('format');
       const path = str('out');
@@ -213,7 +234,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
         const identity = cache.identity(chat.jid);
         const archivedPushname = identity.aliases.map((id) => pushnames.get(id))
           .filter((entry) => entry !== undefined).sort((a, b) => b.ts - a.ts)[0]?.name ?? null;
-        print({ jid: chat.jid, name: identity.name ?? chat.name ?? archivedPushname,
+        print({ jid: chat.jid, ...cache.display(chat.jid, archivedPushname, chat.name),
           phone: identity.phone, pushname: identity.pushname ?? archivedPushname,
           type: chat.type, count: chat.count, lastTs: chat.lastTs });
       }
@@ -223,10 +244,12 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     filters.text = values.regex ? new RegExp(query) : query;
     const limit = integer(str('limit'), Number.MAX_SAFE_INTEGER);
     const records = [];
+    const cache = new NameCache(directory);
     let count = 0;
     if (limit > 0) for (const { record } of store.iterate({ filters })) {
-      if (values.json) records.push(record);
-      else out(`${new Date(record.ts).toISOString()} ${record.chatJid} ${record.senderJid} ${JSON.stringify(record.body)}\n`);
+      const display = displayRecord(cache, record);
+      if (values.json) records.push(display);
+      else out(`${new Date(record.ts).toISOString()} ${JSON.stringify(display.chatName)}${display.chatManual ? ' [manual]' : ''} ${JSON.stringify(display.senderName)}${display.senderManual ? ' [manual]' : ''} ${JSON.stringify(record.body)}\n`);
       if ((values.json ? records.length : ++count) >= limit) break;
     }
     if (values.json) { print(records); return records.length ? 0 : 3; }
