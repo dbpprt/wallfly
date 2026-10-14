@@ -178,7 +178,9 @@ test('name cache fails closed on corrupt data and symlinks', (t) => {
 test('daemon persists event and history mapping, contact/group updates, and credentials offline', async (t) => {
   const { service, socket, root, calls } = setup(t);
   await service.start();
-  assert.deepEqual(calls, [{ authDirectory: join(root, 'auth'), markOnlineOnConnect: false }]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.authDirectory, join(root, 'auth'));
+  assert.equal(calls[0]?.markOnlineOnConnect, false);
   assert.equal(statSync(join(root, 'auth')).mode & 0o777, 0o700);
   socket.emit('connection.update', { connection: 'open' });
   socket.emit('contacts.upsert', [{ id: 'test-chat@invalid', name: 'synthetic-old' }]);
@@ -205,6 +207,18 @@ test('daemon persists event and history mapping, contact/group updates, and cred
   assert.equal(service.status().recordedMessages, 3);
   assert.equal(socket.saved, 1);
   assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('socket lifecycle events use the daemon logger', async (t) => {
+  const { service, logs } = setup(t, {}, {
+    socketFactory: async (options) => {
+      options.log?.('socket.version.fallback');
+      return new FakeSocket();
+    },
+  });
+  await service.start();
+  assert.deepEqual(logs, [{ event: 'socket.version.fallback' }]);
+  assert.equal(service.status().state, 'connecting');
 });
 
 test('control endpoint only exposes loopback status, stop, and send; unknown routes reject', async (t) => {

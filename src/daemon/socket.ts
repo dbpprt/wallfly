@@ -1,4 +1,4 @@
-import type { BaileysEventMap } from '@whiskeysockets/baileys';
+import type { BaileysEventMap, WAVersion } from '@whiskeysockets/baileys';
 import { privateDirectory, secureAuthFiles } from './files.js';
 import { bindSendTransport } from '../send/index.js';
 import type { SendTransport } from '../send/index.js';
@@ -21,14 +21,53 @@ export interface ListenerSocket {
 export interface SocketOptions {
   authDirectory: string;
   markOnlineOnConnect: false;
+  /** Skip version discovery, including its network request. */
+  version?: WAVersion;
+  log?: (event: string) => void;
 }
 export type SocketFactory = (options: SocketOptions) => Promise<ListenerSocket>;
 
+type BaileysDependencies = Pick<typeof import('@whiskeysockets/baileys'),
+  'makeWASocket' | 'useMultiFileAuthState' | 'fetchLatestBaileysVersion' | 'DEFAULT_CONNECTION_CONFIG'>;
+
+let cachedVersion: WAVersion | undefined;
+let pendingVersion: Promise<WAVersion> | undefined;
+
+function logVersionFallback(options: SocketOptions): void {
+  try {
+    if (options.log) options.log('socket.version.fallback');
+    else process.stderr.write(JSON.stringify({ event: 'socket.version.fallback' }) + '\n');
+  } catch { /* Logging must not prevent offline fallback. */ }
+}
+
+async function resolveVersion(options: SocketOptions, baileys: BaileysDependencies): Promise<WAVersion> {
+  if (options.version) return options.version;
+  if (cachedVersion) return cachedVersion;
+  pendingVersion ??= (async () => {
+    const { fetchLatestBaileysVersion, DEFAULT_CONNECTION_CONFIG } = baileys;
+    try {
+      const result = await fetchLatestBaileysVersion({ timeout: 10000 });
+      // Baileys normally returns a fallback result instead of rejecting on fetch failure.
+      if (!result.isLatest) throw new Error('Version discovery unavailable');
+      cachedVersion = result.version;
+    } catch {
+      cachedVersion = DEFAULT_CONNECTION_CONFIG.version;
+      logVersionFallback(options);
+    }
+    return cachedVersion;
+  })();
+  return pendingVersion;
+}
+
 /** Lazy import keeps module loading and mocked tests completely offline. */
-export const createBaileysSocket: SocketFactory = async (options) => {
+export async function createBaileysSocket(options: SocketOptions,
+  dependencies?: BaileysDependencies,
+): Promise<ListenerSocket> {
   privateDirectory(options.authDirectory);
   secureAuthFiles(options.authDirectory);
-  const { makeWASocket, useMultiFileAuthState } = await import('@whiskeysockets/baileys');
+  const baileys = dependencies ?? await import('@whiskeysockets/baileys');
+  const { makeWASocket, useMultiFileAuthState } = baileys;
+  const version = await resolveVersion(options, baileys);
   const { state, saveCreds } = await useMultiFileAuthState(options.authDirectory);
   secureAuthFiles(options.authDirectory);
   const originalSet = state.keys.set.bind(state.keys);
@@ -40,7 +79,7 @@ export const createBaileysSocket: SocketFactory = async (options) => {
   const noop = (): void => {};
   const logger = { level: 'silent', child: () => logger,
     trace: noop, debug: noop, info: noop, warn: noop, error: noop };
-  const socket = makeWASocket({ auth: state, logger, markOnlineOnConnect: options.markOnlineOnConnect,
+  const socket = makeWASocket({ auth: state, logger, version, markOnlineOnConnect: options.markOnlineOnConnect,
     shouldIgnoreJid: (jid) => jid === 'status@broadcast',
     generateHighQualityLinkPreview: false });
   return {
@@ -53,4 +92,4 @@ export const createBaileysSocket: SocketFactory = async (options) => {
     },
     end: (error) => socket.end(error),
   };
-};
+}
