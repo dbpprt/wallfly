@@ -4,4 +4,8 @@ auth/
 *.session
 *.log
 .env
+.env.*
+.wallfly/
+*.jsonl
+*.jsonl.*
 coverage/
