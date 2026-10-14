@@ -14,7 +14,8 @@ protect against processes running as your user, root, or compromised backups.
 | --- | --- |
 | `messages.jsonl` and numbered rotations | Schema-v1 text/captions, chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, and optional live/history `syncType`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
 | `auth/` | Baileys linked-device credentials and encryption/session key material. Directory `0700`, files tightened to `0600` after writes. Treat as credentials. |
-| `contacts.json` | Versioned identifier/name cache, atomically replaced. Names in message records are snapshots. |
+| `contacts.json` | Schema-v2 names, self-declared pushnames/timestamps, and group participant JIDs, LIDs, and ranks; atomically replaced. Reads v1 caches. Names in message records are snapshots. |
+| `lid-map.json` | Schema-v1 observed LID→phone-JID pairs; atomically replaced. No automatic expiry. |
 | `config.json` | Receipt/presence gates, port, and rotation settings; atomically replaced by CLI configuration. |
 | `sends.jsonl` | Append-only send-attempt audit, described below. No automatic rotation. |
 | `wallfly.pid` | PID used to keep foreground and direct modes from sharing auth writers; removed on normal exit. |
@@ -38,6 +39,14 @@ can still create duplicates. Very old media can have a `mediaType` and an empty
 `body` when no caption is available. JSON/CSV exports contain archive content at the
 operator's chosen local path, use `0600`, and are not tracked or erased later
 by wallfly. A failed export may leave a partial file.
+
+Identity comes from WhatsApp-delivered LID/phone mappings, group membership, and
+self-declared pushnames. Linked devices cannot access the phone's address book.
+On connection and group events, metadata queries refresh known group participants;
+failed refreshes can leave stale membership. Pushnames are labels, not verified
+identity. These caches contain sensitive relationship and phone metadata, remain
+local, and have no automatic expiry; unlinking does not remove them. See the
+[README identity guide](../README.md#identity-resolution).
 
 ## Send audit log
 
@@ -69,7 +78,7 @@ may contain the plaintext of your sent messages when WhatsApp echoes them back.
 
 ## What never leaves automatically
 
-During collection, search, and export, the archive files, name-cache file,
+During collection, search, and export, the archive files, identity-cache files,
 configuration, send audit, search queries, exports, and backups stay local.
 wallfly has no background upload, cloud sync, or telemetry path for these
 artifacts. Local media paths and audit hashes are never added as fields to

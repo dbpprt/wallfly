@@ -115,7 +115,8 @@ Use `--` before a positional query starting with a dash.
 | `config set KEY VALUE` | Validate and persist a setting. Restart the daemon to apply. | `wallfly config set keepRotations 10` |
 | `send` | `--to JID`, `--text TEXT` or `--image PATH` or `--document PATH`; optional `--caption C`, `--direct`. | `wallfly send --to synthetic-chat@s.whatsapp.net --text "synthetic-text"` |
 | `sends` | `--limit N` (default 100): latest audit records as JSONL in append order. | `wallfly sends --limit 20` |
-| `chats` | Recorded chats as JSONL: `jid`, `name`, `type`, `count`, `lastTs` (Unix ms). | `wallfly chats` |
+| `chats` | Recorded chats as JSONL: `jid`, `name`, `phone`, `pushname`, `type`, `count`, `lastTs` (Unix ms). | `wallfly chats` |
+| `who JID` | Known identity as JSON: aliases, phone, pushname and timestamp, cached shared groups and ranks, archived count/lastTs. | `wallfly who synthetic-person@lid` |
 | `search QUERY` | `--chat JID`, `--sender JID`, `--from ISO`, `--to ISO`, `--regex`, `--limit N`, `--json`. | `wallfly search synthetic --chat synthetic-chat@invalid --json` |
 | `tail` | `-n N` (default 10), `-f` / `--follow`, `--chat JID`. JSONL output. | `wallfly tail -n 20 -f --chat synthetic-chat@invalid` |
 | `export` | `--chat JID`, `--from ISO`, `--to ISO`, required `--format json\|csv`, `--out FILE`. | `wallfly export --format csv --out ./messages.csv` |
@@ -126,7 +127,7 @@ print `[]`; empty exports create `[]` or a CSV header and exit 3. A following
 tail stays running even if initially empty and exits 0 on Ctrl-C. Counts and
 limits must be nonnegative integers; a limit of zero produces no results.
 
-Search, tail, chats, sends, and export read local files without a running daemon.
+Search, tail, chats, who, sends, and export read local files without a running daemon.
 Message reads include retained rotations in append order. Search defaults to a
 case-sensitive substring and readable lines with ISO time, chat, sender, and
 JSON-escaped body. `--json` emits an array of complete schema records. `--regex`
@@ -174,6 +175,48 @@ incoming chats read; the explicit HTTP send surface also needs `readKeys` to
 request that action. Presence, when enabled, broadcasts available during an
 explicit send. Restart after changes, using the old port to stop the existing
 daemon if the pidfile is unavailable. Rotation deletes data beyond retention.
+
+## Identity resolution
+
+`wallfly chats` uses the current local identity cache to show `name`, `phone`
+(with a leading `+`), and `pushname`, including for older archived `@lid` DMs.
+To find a person's chat, look for their pushname or resolved phone in this output,
+then use the row's original `jid` for queries or explicit sends. Inspect a row with:
+
+```sh
+wallfly chats
+wallfly who synthetic-person@lid
+```
+
+`who` accepts a LID or phone JID, removes device suffixes, and prints known aliases,
+name, phone/phoneJid, pushname/pushnameTs, cached shared groups (`jid`, `name`,
+participant `rank`), and archived message count/lastTs. It reads local files without
+a running daemon. Unknown identities print null fields and empty groups (exit 3).
+
+**The phone's address book is NOT accessible to linked devices.** wallfly can
+only use facts WhatsApp delivers: observed LID↔phone mappings from auth records,
+message sender fields, contact events and phone-number shares; participants in
+the operator's groups; and self-declared pushnames from live/history messages.
+A pushname is a person's chosen label, may change or be shared by several people,
+and does not prove who they are. An undisclosed phone remains `null`; wallfly
+cannot infer it from a LID or guarantee that every DM becomes identifiable.
+
+On connection, the daemon discovers participating groups and fetches metadata
+for all known groups. Group and participant events refresh that metadata; history
+and chat events also discover groups. Participant snapshots replace previous
+membership and retain only JID, optional LID, and rank. Shared groups reflect
+cached membership: failed/offline refreshes can leave stale data.
+
+Observed mappings persist in `~/.wallfly/lid-map.json` (`v: 1`). Names, pushnames
+with Unix millisecond timestamps, and a `participants` section persist in
+`~/.wallfly/contacts.json` (`v: 2`); existing v1 name caches are read and upgraded
+on the next update. Both files are atomically replaced, use `0600`, and stay local.
+Pushnames bind to the sender's known phone and LID aliases, including names learned
+in groups. The newest message timestamp wins; equal timestamps use the last writer,
+and undated messages use receipt time. Older history cannot replace a newer name.
+Duplicate and protocol-only messages can still supply identity facts. Message
+archive records remain append-only snapshots; `chats`/`who` consult newer cache facts
+and use retained archive pushnames as a fallback for earlier installations.
 
 ## Explicit sends and audit log
 
@@ -337,7 +380,7 @@ Incoming events only update local storage. Receipt and presence opt-ins apply
 only within an explicit send, after its audit record is synced.
 
 **Can I search without connecting to WhatsApp?**
-Yes. `search`, `tail`, `chats`, `export`, and `sends` read local files and need
+Yes. `search`, `tail`, `chats`, `who`, `export`, and `sends` read local files and need
 no running daemon. `tail -f` waits for new local records.
 
 **Are messages or backups complete, encrypted, or synced to a cloud?**

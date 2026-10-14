@@ -115,3 +115,29 @@ test('a failing lifecycle logger does not stop fallback socket creation', async 
   assert.equal(makeWASocket.mock.callCount(), 1);
   assert.deepEqual(makeWASocket.mock.calls[0]?.arguments[0].version, bundledVersion);
 });
+
+test('saved and newly written auth LID mappings reach identity persistence offline', async (t) => {
+  const { create, options, dependencies, makeWASocket } = await setup(t);
+  const { writeFileSync, readFileSync, statSync } = await import('node:fs');
+  const observed: [string, string][] = [];
+  writeFileSync(join(options.authDirectory, 'lid-mapping-synthetic-saved.json'), JSON.stringify('synthetic-phone'));
+  writeFileSync(join(options.authDirectory, 'lid-mapping-synthetic-phone_reverse.json'), JSON.stringify('synthetic-saved'));
+  const { LidMap } = await import('../src/daemon/identity.js');
+  const map = new LidMap(options.authDirectory);
+  await create({ ...options, version: overrideVersion, observeLidMapping: (lid, pn) => {
+    observed.push([lid, pn]); map.observe(lid, pn);
+  } }, dependencies);
+  assert.equal(map.phoneJid('synthetic-saved@lid'), 'synthetic-phone@s.whatsapp.net');
+  const auth = makeWASocket.mock.calls[0]!.arguments[0].auth;
+  await auth.keys.set({ 'lid-mapping': { 'synthetic-new': 'synthetic-new-phone',
+    'synthetic-new-phone_reverse': 'synthetic-new', 'synthetic-deleted': null } } as unknown as Parameters<typeof auth.keys.set>[0]);
+  assert.deepEqual(observed, [
+    ['synthetic-saved@lid', 'synthetic-phone@s.whatsapp.net'],
+    ['synthetic-saved@lid', 'synthetic-phone@s.whatsapp.net'],
+    ['synthetic-new@lid', 'synthetic-new-phone@s.whatsapp.net'],
+    ['synthetic-new@lid', 'synthetic-new-phone@s.whatsapp.net'],
+  ]);
+  assert.equal(new LidMap(options.authDirectory).phoneJid('synthetic-new@lid'), 'synthetic-new-phone@s.whatsapp.net');
+  assert.equal(readFileSync(map.path, 'utf8').includes('synthetic-deleted'), false);
+  assert.equal(statSync(map.path).mode & 0o777, 0o600);
+});

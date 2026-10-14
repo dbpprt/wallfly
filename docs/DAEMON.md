@@ -82,7 +82,18 @@ retention follows the JSONL store's rotation policy.
 
 Contact upserts/updates, group upserts/updates, and history names update
 `~/.wallfly/contacts.json` (mode `0600`). The file is atomically replaced and
-contains `{ v: 1, names: { ... } }`, retaining only identifiers and names.
+contains `{ v: 2, names: { ... }, pushnames: { ... }, participants: { ... } }`.
+V1 caches remain readable and upgrade on the next update. The cache retains only
+names, pushnames with message timestamps, and group participant JIDs/LIDs/ranks.
+Observed LID→phone-JID pairs persist separately in `lid-map.json` (v1, `0600`),
+including saved/new auth mapping records, message sender fields, and contact or
+phone-share events. Pushnames are harvested before archive deduplication and bind
+to known aliases; older message timestamps cannot overwrite newer labels.
+On connection the daemon discovers participating groups and fetches metadata for
+all known groups; group/participant events refresh metadata, and history/chat
+events discover additional groups. Metadata failures are logged by category and
+retain the prior snapshot. The phone address book is unavailable to linked devices.
+`wallfly chats` and `wallfly who JID` resolve identities using current local caches.
 Names are snapshots at append time; later name changes do not rewrite records.
 A malformed or unsafe cache file fails startup instead of being overwritten.
 

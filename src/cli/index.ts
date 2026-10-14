@@ -12,6 +12,7 @@ import { commands, usage } from './help.js';
 import { foreground, lockPid, terminatePid } from './lifecycle.js';
 import type { DaemonFactory } from './lifecycle.js';
 import { auditEntries, exportRecords, tail } from './data.js';
+import { NameCache, normalizedJid } from '../daemon/cache.js';
 
 export interface CliDependencies {
   directory?: string;
@@ -26,7 +27,7 @@ const string = { type: 'string' } as const;
 const boolean = { type: 'boolean' } as const;
 const dates = { from: string, to: string };
 const options: Record<string, NonNullable<ParseArgsConfig['options']>> = {
-  start: {}, stop: {}, status: {}, pair: {}, config: {}, chats: {},
+  start: {}, stop: {}, status: {}, pair: {}, config: {}, chats: {}, who: {},
   send: { to: string, text: string, image: string, caption: string, document: string, direct: boolean },
   sends: { limit: string },
   search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean },
@@ -69,7 +70,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     const values = parsed.values as Record<string, string | boolean | undefined>;
     const str = (name: string): string | undefined => values[name] as string | undefined;
     const positionals = parsed.positionals;
-    if (command !== 'config' && positionals.length !== (command === 'search' ? 1 : 0)) {
+    if (command !== 'config' && positionals.length !== (command === 'search' || command === 'who' ? 1 : 0)) {
       throw new Error('Unexpected or missing positional argument.');
     }
     if (!dependencies.signal) {
@@ -160,6 +161,32 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       throw new Error('--from must not exceed --to.');
     }
     const store = new JsonlStore({ ...config, directory });
+    if (command === 'who') {
+      const jid = positionals[0]!;
+      if (!/^[^\s@]+@[^\s@]+$/.test(jid)) throw new Error('who requires a JID.');
+      const identity = new NameCache(directory).identity(jid);
+      let count = 0;
+      let lastTs: number | null = null;
+      let archivedName: string | null = null;
+      let archivedPushname: string | null = null;
+      let archivedPushnameTs = -1;
+      for (const { record } of store.iterate()) {
+        if (identity.aliases.includes(normalizedJid(record.chatJid))) {
+          count++;
+          lastTs = Math.max(lastTs ?? 0, record.ts);
+          archivedName = record.chatName ?? archivedName;
+        }
+        if (!record.fromMe && identity.aliases.includes(normalizedJid(record.senderJid))
+          && record.pushName && record.ts >= archivedPushnameTs) {
+          archivedPushname = record.pushName;
+          archivedPushnameTs = record.ts;
+        }
+      }
+      print({ ...identity, name: identity.name ?? archivedName ?? archivedPushname,
+        pushname: identity.pushname ?? archivedPushname,
+        pushnameTs: identity.pushnameTs ?? (archivedPushnameTs < 0 ? null : archivedPushnameTs), count, lastTs });
+      return count || identity.name || identity.phone || identity.groups.length || archivedPushname ? 0 : 3;
+    }
     if (command === 'tail') return await tail(store, integer(str('n'), 10), filters, !!values.follow, signal, print);
     if (command === 'export') {
       const format = str('format');
@@ -168,15 +195,28 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       return exportRecords(store, filters, format, path);
     }
     if (command === 'chats') {
+      const cache = new NameCache(directory);
       const chats = new Map<string, { jid: string; name: string | null; type: string; count: number; lastTs: number }>();
+      const pushnames = new Map<string, { name: string; ts: number }>();
       for (const { record } of store.iterate()) {
         const chat = chats.get(record.chatJid) ?? { jid: record.chatJid, name: record.chatName,
           type: record.chatType, count: 0, lastTs: 0 };
         chat.count++; chat.lastTs = Math.max(chat.lastTs, record.ts);
         chat.name = record.chatName ?? chat.name;
+        const sender = normalizedJid(record.senderJid);
+        if (!record.fromMe && record.pushName && record.ts >= (pushnames.get(sender)?.ts ?? -1)) {
+          pushnames.set(sender, { name: record.pushName, ts: record.ts });
+        }
         chats.set(chat.jid, chat);
       }
-      for (const chat of chats.values()) print(chat);
+      for (const chat of chats.values()) {
+        const identity = cache.identity(chat.jid);
+        const archivedPushname = identity.aliases.map((id) => pushnames.get(id))
+          .filter((entry) => entry !== undefined).sort((a, b) => b.ts - a.ts)[0]?.name ?? null;
+        print({ jid: chat.jid, name: identity.name ?? chat.name ?? archivedPushname,
+          phone: identity.phone, pushname: identity.pushname ?? archivedPushname,
+          type: chat.type, count: chat.count, lastTs: chat.lastTs });
+      }
       return chats.size ? 0 : 3;
     }
     const query = positionals[0]!;

@@ -202,7 +202,7 @@ test('daemon persists event and history mapping, contact/group updates, and cred
   assert.deepEqual(records.map((record) => record.syncType), ['notify', 'append', 'append']);
   assert.equal(records[0]?.chatName, 'synthetic-new');
   assert.equal(records[1]?.chatName, 'synthetic-new-group');
-  assert.equal(records[2]?.senderName, 'synthetic-history');
+  assert.equal(records[2]?.senderName, 'synthetic-push');
   assert.equal(service.cache.get('test-history-group@g.us'), 'synthetic-history-group');
   assert.equal(service.status().recordedMessages, 3);
   assert.equal(socket.saved, 1);
@@ -532,4 +532,68 @@ test('stop drains an in-flight send before closing its socket and rejects queued
   assert.deepEqual(socket.outgoingCalls, ['message']);
   assert.equal(socket.closed, 1);
   assert.equal(readFileSync(join(root, 'sends.jsonl'), 'utf8').trim().split('\n').length, 1);
+});
+
+test('connect and group events refresh all known participants; failures stay local and recover', async (t) => {
+  const { service, socket, root, logs } = setup(t);
+  const lid = 'synthetic-member@lid';
+  const pn = 'synthetic-member-phone@s.whatsapp.net';
+  const group = { id: 'synthetic-members@g.us', subject: 'synthetic-members-name', addressingMode: 'lid' as const,
+    owner: undefined, participants: [{ id: lid, jid: pn, lid, admin: 'admin' as const }] };
+  let members = group.participants;
+  let fail = false;
+  const fetched: string[] = [];
+  const groupSocket = socket as FakeSocket & Pick<Required<ListenerSocket>, 'groupMetadata' | 'groupFetchAllParticipating'>;
+  groupSocket.groupFetchAllParticipating = async () => ({ [group.id]: group });
+  groupSocket.groupMetadata = async (jid) => {
+    fetched.push(jid);
+    if (fail) throw new Error('synthetic-sensitive-error');
+    return { ...group, participants: members };
+  };
+  await service.start();
+  socket.emit('connection.update', { connection: 'open' });
+  await service.flush();
+  assert.deepEqual(fetched, [group.id]);
+  assert.equal(new NameCache(root).identity(lid).phoneJid, pn);
+  assert.equal(service.cache.identity(pn).groups[0]?.rank, 'admin');
+  members = [];
+  socket.emit('group-participants.update', { id: group.id, author: 'synthetic-owner@lid', participants: [lid], action: 'remove' });
+  await service.flush();
+  assert.deepEqual(service.cache.identity(lid).groups, []);
+  fail = true;
+  socket.emit('groups.update', [{ id: group.id, subject: 'synthetic-updated' }]);
+  socket.emit('messages.upsert', { type: 'notify', messages: [message()] });
+  await service.flush();
+  assert.equal(service.status().recordedMessages, 1);
+  assert.ok(logs.some((entry) => entry.event === 'group.metadata.failed'));
+  fail = false;
+  members = group.participants;
+  socket.emit('groups.upsert', [group]);
+  await service.flush();
+  assert.equal(service.cache.identity(lid).groups.length, 1);
+  assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('live/history pushnames and sender fields are harvested even on deduplicated messages', async (t) => {
+  const { service, socket, root } = setup(t);
+  const lid = 'synthetic-dm@lid';
+  const pn = 'synthetic-dm-phone@s.whatsapp.net';
+  const sample = message({ key: { remoteJid: lid, senderPn: pn, id: 'synthetic-identity-id' },
+    pushName: 'synthetic-first', messageTimestamp: 20 });
+  await service.start();
+  socket.emit('messages.upsert', { type: 'notify', messages: [sample] });
+  socket.emit('messaging-history.set', { chats: [], contacts: [], messages: [
+    { ...sample, pushName: 'synthetic-older', messageTimestamp: 10 },
+    { ...sample, pushName: 'synthetic-current', messageTimestamp: 30 },
+  ] });
+  socket.emit('chats.phoneNumberShare', { lid: 'synthetic-shared@lid', jid: 'synthetic-shared-phone@s.whatsapp.net' });
+  await service.flush();
+  assert.equal(service.status().recordedMessages, 1);
+  const cache = new NameCache(root);
+  assert.equal(cache.identity(lid).phoneJid, pn);
+  assert.equal(cache.get(lid), 'synthetic-current');
+  assert.equal(cache.get(pn), 'synthetic-current');
+  assert.equal(cache.identity('synthetic-shared@lid').phone, '+synthetic-shared-phone');
+  assert.equal(statSync(join(root, 'lid-map.json')).mode & 0o777, 0o600);
+  assert.deepEqual(socket.outgoingCalls, []);
 });
