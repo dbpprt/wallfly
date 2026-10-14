@@ -12,7 +12,8 @@ npm test
 
 Tests use `node:test`, compile to ignored `dist/`, and must run offline. Mock
 the socket layer when transport is introduced; never contact WhatsApp in CI.
-This scaffold has no runtime dependencies. Baileys is deferred to task 3.
+The listener pins Baileys and qrcode exactly. Inject the listener socket
+factory in daemon tests; do not instantiate the production socket.
 
 ## Workflow
 

@@ -35,7 +35,7 @@ test('append roundtrip, schema-only serialization, reopen, and append-order tail
   const first = record({ body: 'synthetic-\u03bb\n"\\' });
   const second = record({ messageId: 'test-id-b', ts: 500, chatType: 'group', fromMe: true,
     chatName: 'synthetic-group', senderName: 'synthetic-sender', pushName: 'synthetic-push',
-    mediaType: 'image' });
+    mediaType: 'image', syncType: 'append' });
   store.append({ ...first, ignoredMetadata: 'synthetic-extra' } as MessageRecord);
   const cursor = store.append(second);
   assert.deepEqual(store.filter(), { records: [first, second], corruptLines: 0, cursor });
@@ -61,7 +61,8 @@ test('validator rejects missing fields, invalid types, versions, and timestamps'
     { ...valid, receivedAt: Infinity }, { ...valid, ts: 1.1 }, { ...valid, chatJid: '' },
     { ...valid, senderJid: '' }, { ...valid, messageId: '' }, { ...valid, chatType: 'other' },
     { ...valid, fromMe: 1 }, { ...valid, body: null }, { ...valid, mediaType: {} },
-    { ...valid, chatName: 1 }, { ...valid, senderName: false }, { ...valid, pushName: [] }]) {
+    { ...valid, chatName: 1 }, { ...valid, senderName: false }, { ...valid, pushName: [] },
+    { ...valid, syncType: 'other' }, { ...valid, syncType: null }]) {
     assert.equal(validateRecord(invalid), false);
   }
   const store = setup(t);

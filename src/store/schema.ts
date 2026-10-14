@@ -13,6 +13,8 @@ export interface MessageRecord {
   body: string;
   mediaType: string | null;
   messageId: string;
+  /** Added by the listener; older v1 records omit this field. */
+  syncType?: 'notify' | 'append';
 }
 
 const nullableString = (value: unknown): boolean => value === null || typeof value === 'string';
@@ -20,7 +22,7 @@ const timestamp = (value: unknown): boolean =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const identifier = (value: unknown): boolean => typeof value === 'string' && value.length > 0;
 
-/** Plain type guard: all v1 fields are required; unknown versions are rejected. */
+/** Required v1 fields plus optional sync metadata; unknown versions are rejected. */
 export function validateRecord(value: unknown): value is MessageRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
@@ -30,5 +32,6 @@ export function validateRecord(value: unknown): value is MessageRecord {
     && typeof record.fromMe === 'boolean' && identifier(record.senderJid)
     && nullableString(record.senderName) && nullableString(record.pushName)
     && typeof record.body === 'string' && nullableString(record.mediaType)
-    && identifier(record.messageId);
+    && identifier(record.messageId)
+    && (record.syncType === undefined || record.syncType === 'notify' || record.syncType === 'append');
 }
