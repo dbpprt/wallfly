@@ -1,6 +1,6 @@
 {
   "name": "wallfly",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "A self-hosted WhatsApp client with local storage and an explicit, audited send surface.",
   "type": "module",
@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsc && node --test dist/test/*.test.js",
     "build": "tsc",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "pack:check": "npm run build && node scripts/check-pack.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -31,5 +32,14 @@
   },
   "bin": {
     "wallfly": "bin/wallfly"
-  }
+  },
+  "files": [
+    "bin/",
+    "dist/src/",
+    "docs/",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ]
 }

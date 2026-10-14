@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   checks:
-    name: Lint, typecheck, test (Node ${{ matrix.node }})
+    name: Lint, typecheck, test, pack (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,6 +26,7 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - run: npm run pack:check
 
   gitleaks:
     name: Gitleaks

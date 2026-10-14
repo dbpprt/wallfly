@@ -1,64 +1,103 @@
 # Architecture
 
-wallfly currently implements a linked-device listener, local process control,
-contact/group name cache, a versioned JSONL store, and an explicit audited
-send surface. The CLI remains a planned module boundary.
+v0.1.0 implements a single-account linked-device daemon, local process control,
+name caching, a versioned JSONL archive, a query/export CLI, and explicit audited
+sends. It runs on Node.js >=20 with ESM and no application framework.
 
-| Boundary | Responsibility |
+| Boundary | Shipped responsibility |
 | --- | --- |
-| `src/daemon/` | Baileys socket adapter, event mapping, reconnect, pairing QR output, persisted name cache, and loopback HTTP status/stop/send routing. |
-| `src/store/` | Append-only JSONL writer/reader, filters, tail, cursors, and size rotation. |
-| `src/send/` | Single `SendService.send(request)` path, text/image/document sends, audit writer, and config gates. |
-| `src/cli/` | Placeholder for plain argument parsing and lifecycle/query/export commands. |
-| `test/` | Offline `node:test` coverage using injected transport mocks. |
+| `src/daemon/` | Lazy Baileys socket factory, incoming event mapping, reconnect, terminal/PNG pairing, persisted name cache, and loopback status/stop/send routing. |
+| `src/store/` | Synchronous JSONL append/read, filters, tail, cursors, validation, and size rotation. No runtime dependencies. |
+| `src/send/` | Baileys message/read/presence adapter, shared audited send service, local media loading, HTTP input validation, config gates, and one-shot direct sends. |
+| `src/cli/` | Node `util.parseArgs` parsing/help, configuration, exclusive pidfile lifecycle, local queries/exports, and explicit HTTP/direct send dispatch. |
+| `bin/wallfly` | Executable loading the compiled CLI from `dist/src/cli/index.js`. |
+| `test/` | Offline `node:test` coverage with injected socket, HTTP, and lifecycle dependencies. |
 
 ```text
-WhatsApp linked-device events
-             |
-             v
-       src/daemon/ ----> pairing QR / connection status
-             |          contacts.json / loopback status + stop
-             | received events + cached names
-             v
-        src/store/ ----> ~/.wallfly/messages.jsonl
-             |          append-only; versioned records
-             v
-       local queries
+WhatsApp events -> daemon event queue -> store -> messages.jsonl (+ rotations)
+                         |                         ^
+                         +-> contacts.json         | local query/export CLI
+
+wallfly send -> loopback POST /send -> SendService.sendWithAudit
+        \----> --direct connection -----------> |
+                                                v
+                                validate + load local media
+                                                |
+                                append + fsync sends.jsonl
+                                                |
+                                optional presence / receipts
+                                                |
+                                Baileys text/image/document call
 ```
 
-The daemon uses a narrow `ListenerSocket` interface with an opaque outgoing
-port. Only `src/send/` accesses Baileys message/read/presence APIs; HTTP delegates
-to `SendService.send(request)`, which is also the integration point for the
-future CLI. Requests validate first, append and fsync `sends.jsonl`, then
-execute. Audit failure prevents all outgoing operations; transmission failures
-retain the audit and never retry automatically. Incoming events never invoke
-the outgoing surface, even with config gates enabled. Baileys is imported lazily by the production socket
-factory. Tests inject mocks and never instantiate the production transport.
-Incoming event handlers run serially to preserve name updates before message
-appends. Each handler catches failures, and individual message append failures
-allow the rest of a batch to continue. Old sockets are detached on disconnect;
-shutdown drains queued events and cancels retries.
+## Incoming data and lifecycle
 
-Baileys is pinned to `6.7.23`; `qrcode` is pinned to `1.5.4` for terminal/PNG
-pairing output. The store still has no runtime dependencies. `@types/qrcode`
-and `@types/ws` are development-only declarations; the DOM type library is
-included because qrcode's declarations describe browser overloads as well as
-its Node API. Application type checking remains strict.
+The production socket factory lazily imports Baileys `6.7.23`, uses multi-file
+auth at `~/.wallfly/auth/`, disables Baileys debug logging, and sets
+`markOnlineOnConnect: false`. Pairing uses pinned `qrcode` `1.5.4`; the private
+PNG is removed on connection, disconnection, or stop. CLI foreground and direct
+modes share an exclusive `wallfly.pid` lock; one writer per directory is supported.
 
-Store v1 now accepts optional `syncType: "notify" | "append"` metadata;
-existing v1 records are unchanged. Each daemon record includes it. File mode
-is `0600`, directory mode is `0700`. The auth directory is `~/.wallfly/auth/`;
-name cache updates atomically replace `~/.wallfly/contacts.json`.
+Incoming handlers run serially so name updates precede subsequent appends.
+Live upserts use `syncType: "notify"`; history uses `"append"`. Protocol-only
+messages and status broadcasts are skipped. Text/captions and metadata are
+mapped; attachment bytes are not downloaded. Individual append failures are
+logged by category and not retried. The rest of the batch continues. Name cache
+updates atomically replace `contacts.json`; names in old records stay snapshots.
 
-The control listener binds exclusively to `127.0.0.1` (default port `7877`),
-with `GET /status`, `POST /stop`, and `POST /send`. Other paths/methods return
-`404`. Host and Origin checks restrict browser access. `markOnlineOnConnect`
-is false. Receipt and presence gates default OFF and apply only during
-explicit sends; persisted config is loaded at startup. Sends are serialized,
-resolve a connected transport when execution starts, and cannot migrate to a
-replacement socket during an operation. Stop drains in-flight sends and rejects
-queued sends before transmission.
+Disconnected sockets are detached. Reconnect backoff doubles from 1 second to
+60 seconds and resets on connection. Logged-out sessions do not retry invalid
+auth. Shutdown cancels retries, discards stale events, and drains queued event
+work and in-flight sends. Queued sends reject once stopping begins. The direct
+send path reuses saved auth for one connection attempt, waits up to 30 seconds,
+and never pairs, reconnects, or retries a send.
 
-See [DAEMON.md](DAEMON.md) for lifecycle, pairing, failure handling, and API
-contracts, [SEND.md](SEND.md) for outgoing requests/auditing/config, and
-[PRIVACY.md](PRIVACY.md) for data handling. CLI commands remain planned.
+## Explicit outgoing operations
+
+The daemon carries an opaque `SendTransport`; only `src/send/` accesses Baileys
+`sendMessage`, `readMessages`, and `sendPresenceUpdate`. CLI HTTP sends and
+`POST /send` use `SendService.sendWithAudit`; `--direct` creates the same service.
+`SendService.send` is a wrapper around that audited path. Incoming handlers
+never invoke it. There is no scheduler, autonomous send, or incoming reply hook.
+
+Requests are snapshotted and serialized. Execution requires a connected
+transport, valid receipt permissions, and readable local media. It appends and
+fsyncs one audit record before presence, receipts, or the message call. Audit
+failure blocks all three. Transmission failure retains the attempt, without
+retry. The request keeps its transport identity throughout and cannot migrate
+to a replacement socket after disconnect. The receipt/presence gates default
+OFF, are loaded at startup, and operate only within an explicit send.
+
+## Local API and persistence
+
+The API binds exclusively to `127.0.0.1`, default port `7877`; no remote bind
+option exists. Routes are `GET /status`, `POST /stop`, and `POST /send`; other
+methods/paths return `404`. Requests must omit Origin and use the bound
+loopback Host. The API has no authentication and is accessible to local processes.
+The send handler requires JSON and limits its body to 1 MiB.
+
+The data directory uses `0700`; store/auth/cache/config/audit files use `0600`.
+The JSONL message schema is v1 with optional `syncType`; old v1 records remain
+readable. Readers skip and count corrupt records. Cursors identify a file and
+byte offset and survive rotation while retained. Retention can expire a cursor.
+The default store rotates before exceeding 10 MiB, retaining five archives
+plus the current file. It does not deduplicate history, reconcile edits/deletes,
+or expire disappearing messages. Rotation deletes older files and is not a
+crash-atomic transaction. Message appends are not fsynced by default; audit
+appends always are. The audit has no automatic rotation.
+
+Configuration is validated by the CLI, atomically replaced, and applied on
+restart. Read-only CLI commands query local retained files without a daemon.
+Exports are private JSON/CSV files; an existing destination is refused.
+
+## Build and release
+
+TypeScript compiles source and tests to `dist/` with strict checking. CI uses
+Node 20 and 22, lint, typecheck, offline tests, and Gitleaks. `npm run pack:check`
+builds, packs an allowlisted runtime/documentation tarball, checks its contents,
+and exercises the installed CLI help without a WhatsApp connection. The `v*`
+tag workflow repeats the matrix and secret scan before creating a GitHub
+Release with the tarball. The package remains private; no npm publish occurs.
+
+See [DAEMON.md](DAEMON.md), [SEND.md](SEND.md), [PRIVACY.md](PRIVACY.md), and the
+[README](../README.md) for the operational contracts and known limitations.
