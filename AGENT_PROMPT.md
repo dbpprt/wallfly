@@ -53,6 +53,24 @@ explicit, audited send surface.
 - Conventional commits. Small PRs. Reference the card in the PR body.
 - No new runtime dependencies without a one-line justification in the PR body.
 
+## Live testing on olga (added 2026-10-14)
+
+The olga daemon (machine `d_BsXXeLK4zS4BVSOa`, project `p_714656912d63`) runs the
+paired production instance with real credentials. Agents may use the dieter CLI
+to test against it:
+
+```
+dieter --machine d_BsXXeLK4zS4BVSOa remote exec --project p_714656912d63 -- bash -c 'cd /home/dbpprt/projects/wallfly && node bin/wallfly status'
+```
+
+Rules for live tests:
+- Read-only checks (`status`, `chats`, `search`, `who`, `sends`) are always fine.
+- **Real sends**: at most ONE per PR, only to the owner's own self-chat or DM,
+  marked `[wallfly test]` in the text, and disclosed in the PR body. Never send
+  to third parties as a test — every send is audit-logged and visible.
+- Never restart/stop the service or edit `~/.wallfly/*` state from a test.
+- If the daemon is mid-history-sync, wait rather than adding load.
+
 ## Non-goals
 
 - Auto-reply, bots, scheduled/autonomous sends, reactions to incoming
