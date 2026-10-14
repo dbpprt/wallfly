@@ -1,9 +1,9 @@
 # Explicit sends
 
 `POST /send` on `http://127.0.0.1:7877` delegates to the single
-`SendService.send(request)` function in `src/send/`. The daemon must be connected.
-The future `wallfly send` CLI will use this same path; CLI commands are a separate
-task. There are no automatic sends or retries.
+`SendService.sendWithAudit(request)` function in `src/send/`. The daemon must be connected.
+`wallfly send` uses this same path; `--direct` uses the same audited service
+with saved auth for a single attempt. There are no automatic sends or retries.
 
 Send JSON with `Content-Type: application/json`, no Origin header, and the bound
 `127.0.0.1:PORT` Host header. Requests are limited to 1 MiB. The API has no
@@ -34,8 +34,9 @@ curl http://127.0.0.1:7877/send \
 ```
 
 For media replace `text` with `image` or `document` and a local file path; add
-`caption` if needed. Success returns `200` and `{ "messageId": "..." }` (the
-ID may be null if the transport supplies none). This means the transport call
+`caption` if needed. Success returns `200` and `{ "messageId": "...", "audit": { ... } }` (the
+ID may be null if the transport supplies none). `audit` is the exact appended
+record, printed by the CLI. This means the transport call
 completed, not that a recipient read or received the message.
 
 | HTTP status | Meaning |
@@ -71,9 +72,8 @@ waits for in-flight operations and rejects queued sends before transmission.
 
 ## Receipt and presence configuration
 
-Both flags default OFF. `npm run daemon` reads `~/.wallfly/config.json` on
-startup. Until the CLI config task is implemented, opt in by writing boolean
-flags in that private file, then restarting the daemon:
+Both flags default OFF. `wallfly start` (also `npm run daemon`) reads
+`~/.wallfly/config.json` on startup. The private file can contain:
 
 ```json
 { "read_receipts": true, "presence": true }
@@ -81,7 +81,7 @@ flags in that private file, then restarting the daemon:
 
 Missing flags default OFF; malformed JSON, nonboolean flags, and unsafe files
 fail startup. The file is tightened to mode `0600`. Programmatic daemon options
-accept the same boolean fields. The planned CLI controls are:
+accept the same boolean fields. Use these CLI controls, then restart:
 
 ```sh
 wallfly config set read_receipts true

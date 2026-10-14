@@ -375,7 +375,8 @@ test('POST /send validates JSON, audits, sends only while connected, and default
   socket.emit('connection.update', { connection: 'open' });
   await service.flush();
   assert.deepEqual(await control(port, 'POST', '/send', body, headers), {
-    status: 200, body: { messageId: 'synthetic-sent-id' },
+    status: 200, body: { messageId: 'synthetic-sent-id',
+      audit: JSON.parse(readFileSync(join(root, 'sends.jsonl'), 'utf8')) as unknown },
   });
   assert.deepEqual(socket.outgoingCalls, ['message']);
   assert.equal(JSON.parse(readFileSync(join(root, 'sends.jsonl'), 'utf8')).kind, 'text');
@@ -405,7 +406,7 @@ test('enabled config gates cause no automatic effects; POST /send explicitly tri
 });
 
 test('stop drains an in-flight send before closing its socket and rejects queued sends', async (t) => {
-  const send = t.mock.method(SendService.prototype, 'send');
+  const send = t.mock.method(SendService.prototype, 'sendWithAudit');
   const { service, socket, root } = setup(t);
   let release!: () => void;
   socket.outgoing.message = async () => {

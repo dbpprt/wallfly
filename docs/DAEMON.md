@@ -47,8 +47,10 @@ curl http://127.0.0.1:7877/status
 curl -X POST http://127.0.0.1:7877/stop
 ```
 
-`SIGINT` and `SIGTERM` also stop the listener gracefully. The CLI lifecycle
-commands are a later task; the npm command is the current entry point.
+`SIGINT` and `SIGTERM` also stop the listener gracefully. `wallfly start` and
+`wallfly pair` run in the foreground with an exclusive private pidfile;
+`wallfly stop` signals that PID or falls back to `POST /stop`. `npm run daemon`
+uses the same CLI lifecycle. See the README for configuration and systemd.
 
 ## Persistence and reconnect
 
@@ -93,7 +95,7 @@ Queued sends that have not begun transmission reject once stopping begins.
 Import `DaemonService` from `dist/src/daemon/index.js` after compilation.
 `start()`, `stop()`, and `flush()` return promises; `status()` returns a snapshot.
 Options include `directory`, `port` (zero selects a free port),
-`backoffBaseMs`, and `backoffMaxMs`. `host` accepts only `127.0.0.1`.
+`maxBytes`, `keepRotations`, `backoffBaseMs`, and `backoffMaxMs`. `host` accepts only `127.0.0.1`.
 `read_receipts` and `presence` accept booleans, default OFF, and apply only
 inside explicit sends. The npm entry point reads these flags from
 `~/.wallfly/config.json` at startup; invalid configuration fails startup.

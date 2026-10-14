@@ -1,0 +1,26 @@
+[Unit]
+Description=wallfly linked-device client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# User unit: install the built checkout at ~/.local/share/wallfly first.
+WorkingDirectory=%h/.local/share/wallfly
+ExecStart=/usr/bin/node %h/.local/share/wallfly/bin/wallfly start
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.wallfly
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=default.target
