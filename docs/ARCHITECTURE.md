@@ -51,6 +51,10 @@ messages and status broadcasts are skipped. Text/captions and metadata are
 mapped; attachment bytes are not downloaded. Individual append failures are
 logged by category and not retried. The rest of the batch continues. Name cache
 updates atomically replace `contacts.json`; names in old records stay snapshots.
+Sockets use `syncFullHistory: true` by default. A daemon-lifetime in-memory set
+of successfully appended message IDs deduplicates live/history overlaps across
+reconnects, but does not load IDs from earlier process sessions. Each append
+wave logs `history.wave` with its successful new-record count only.
 
 Disconnected sockets are detached. Reconnect backoff doubles from 1 second to
 60 seconds and resets on connection. Logged-out sessions do not retry invalid
@@ -88,7 +92,7 @@ The JSONL message schema is v1 with optional `syncType`; old v1 records remain
 readable. Readers skip and count corrupt records. Cursors identify a file and
 byte offset and survive rotation while retained. Retention can expire a cursor.
 The default store rotates before exceeding 10 MiB, retaining five archives
-plus the current file. It does not deduplicate history, reconcile edits/deletes,
+plus the current file. The store itself does not deduplicate history, reconcile edits/deletes,
 or expire disappearing messages. Rotation deletes older files and is not a
 crash-atomic transaction. Message appends are not fsynced by default; audit
 appends always are. The audit has no automatic rotation.

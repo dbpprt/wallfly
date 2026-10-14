@@ -57,7 +57,7 @@ function setup(t: TestContext, options: DaemonOptions = {}, dependencies: Daemon
   const root = directory(t);
   const socket = new FakeSocket();
   const calls: SocketOptions[] = [];
-  const logs: { event: string; details?: { attempt: number; delayMs: number } }[] = [];
+  const logs: { event: string; details?: Parameters<NonNullable<DaemonDependencies['log']>>[1] }[] = [];
   const service = new DaemonService({ directory: root, port: 0, ...options }, {
     socketFactory: async (value) => { calls.push(value); return socket; },
     pairingOutput: async () => {},
@@ -209,6 +209,90 @@ test('daemon persists event and history mapping, contact/group updates, and cred
   assert.deepEqual(socket.outgoingCalls, []);
 });
 
+test('history waves deduplicate live and history overlap and log only successful counts', async (t) => {
+  const { service, socket, root, logs } = setup(t);
+  const history = message({ key: { remoteJid: 'test-chat@invalid', id: 'test-history-id' } });
+  await service.start();
+  socket.emit('messages.upsert', { type: 'notify', messages: [message(), message()] });
+  socket.emit('messages.upsert', { type: 'append', messages: [message(), history, history,
+    message({ key: { remoteJid: 'status@broadcast', id: 'test-status' } })] });
+  socket.emit('messaging-history.set', { chats: [], contacts: [], messages: [history, message()] });
+  socket.emit('messages.upsert', { type: 'notify', messages: [history] });
+  socket.emit('messages.upsert', { type: 'append', messages: [] });
+  await service.flush();
+  const records = new JsonlStore({ directory: root }).filter().records;
+  assert.deepEqual(records.map((record) => [record.messageId, record.syncType]),
+    [['test-id', 'notify'], ['test-history-id', 'append']]);
+  assert.equal(service.status().recordedMessages, 2);
+  assert.deepEqual(logs, [
+    { event: 'history.wave', details: { recorded: 1 } },
+    { event: 'history.wave', details: { recorded: 0 } },
+    { event: 'history.wave', details: { recorded: 0 } },
+  ]);
+  assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('failed and unmappable messages remain eligible for a later history wave', async (t) => {
+  let attempts = 0;
+  const written: string[] = [];
+  const { service, socket, logs } = setup(t, {}, {
+    store: { append: (record) => {
+      if (++attempts === 1) throw new Error('synthetic-sensitive-error');
+      written.push(record.messageId);
+    } },
+  });
+  await service.start();
+  socket.emit('messages.upsert', { type: 'append', messages: [message(),
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'test-later-id' }, message: {} })] });
+  socket.emit('messaging-history.set', { chats: [], contacts: [], messages: [message(),
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'test-later-id' } })] });
+  socket.emit('messages.upsert', { type: 'append', messages: [message()] });
+  await service.flush();
+  assert.deepEqual(written, ['test-id', 'test-later-id']);
+  assert.equal(service.status().recordedMessages, 2);
+  assert.deepEqual(logs, [
+    { event: 'message.append.failed' },
+    { event: 'history.wave', details: { recorded: 0 } },
+    { event: 'history.wave', details: { recorded: 2 } },
+    { event: 'history.wave', details: { recorded: 0 } },
+  ]);
+});
+
+test('history deduplication survives reconnects for the daemon lifetime', async (t) => {
+  const sockets: FakeSocket[] = [];
+  const { service, root, logs } = setup(t, { backoffBaseMs: 5, backoffMaxMs: 5 }, {
+    socketFactory: async () => { const socket = new FakeSocket(); sockets.push(socket); return socket; },
+  });
+  await service.start();
+  sockets[0]!.emit('messages.upsert', { type: 'notify', messages: [message()] });
+  await service.flush();
+  sockets[0]!.emit('connection.update', { connection: 'close' });
+  await service.flush();
+  await eventually(() => sockets.length === 2);
+  sockets[1]!.emit('messages.upsert', { type: 'append', messages: [message(),
+    message({ key: { remoteJid: 'test-chat@invalid', id: 'test-new-id' } })] });
+  await service.flush();
+  assert.deepEqual(new JsonlStore({ directory: root }).filter().records.map((record) => record.messageId),
+    ['test-id', 'test-new-id']);
+  assert.equal(service.status().recordedMessages, 2);
+  assert.deepEqual(logs.filter((value) => value.event === 'history.wave'),
+    [{ event: 'history.wave', details: { recorded: 1 } }]);
+});
+
+test('a failing history logger does not prevent later waves from being recorded', async (t) => {
+  const { service, socket, root } = setup(t, {}, {
+    log: () => { throw new Error('synthetic-log-error'); },
+  });
+  await service.start();
+  socket.emit('messages.upsert', { type: 'append', messages: [message()] });
+  socket.emit('messages.upsert', { type: 'append', messages: [message({
+    key: { remoteJid: 'test-chat@invalid', id: 'test-next-id' },
+  })] });
+  await service.flush();
+  assert.equal(new JsonlStore({ directory: root }).filter().records.length, 2);
+  assert.equal(service.status().recordedMessages, 2);
+});
+
 test('socket lifecycle events use the daemon logger', async (t) => {
   const { service, logs } = setup(t, {}, {
     socketFactory: async (options) => {
@@ -267,7 +351,8 @@ test('retry backoff is logged, capped, recovers after failures, and cancels on s
   await service.start();
   assert.equal(service.status().state, 'reconnecting');
   await eventually(() => attempts === 4);
-  assert.deepEqual(logs.filter((value) => value.event === 'connection.retry').map((value) => value.details?.delayMs), [5, 10, 10]);
+  assert.deepEqual(logs.filter((value) => value.event === 'connection.retry')
+    .map((value) => value.details && 'delayMs' in value.details ? value.details.delayMs : undefined), [5, 10, 10]);
   assert.equal(JSON.stringify(logs).includes('synthetic-sensitive-error'), false);
   socket.emit('connection.update', { connection: 'open' });
   await service.flush();

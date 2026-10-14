@@ -80,6 +80,7 @@ export async function createBaileysSocket(options: SocketOptions,
   const logger = { level: 'silent', child: () => logger,
     trace: noop, debug: noop, info: noop, warn: noop, error: noop };
   const socket = makeWASocket({ auth: state, logger, version, markOnlineOnConnect: options.markOnlineOnConnect,
+    syncFullHistory: true,
     shouldIgnoreJid: (jid) => jid === 'status@broadcast',
     generateHighQualityLinkPreview: false });
   return {
