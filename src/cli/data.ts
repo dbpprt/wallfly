@@ -4,7 +4,8 @@ import { createReadStream } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Cursor, Filters, MessageRecord } from '../store/index.js';
-import { JsonlStore } from '../store/index.js';
+import { JsonlStore, matchesRecord } from '../store/index.js';
+import { queryRecords, ReconciliationView } from '../store/reconciliation.js';
 import { auditRotationIndices } from '../send/audit.js';
 
 export function last<T>(items: Iterable<T>, count: number): T[] {
@@ -47,11 +48,12 @@ export async function auditEntries(directory: string, limit: number): Promise<un
 }
 
 export async function tail(store: JsonlStore, count: number, filters: Filters,
-  follow: boolean, signal: AbortSignal, print: (record: MessageRecord) => void): Promise<number> {
-  const initial = store.iterate({ filters });
+  follow: boolean, signal: AbortSignal, print: (record: MessageRecord) => void, raw = false): Promise<number> {
+  const view = new ReconciliationView();
+  const initial = queryRecords(store, filters, raw, view);
   let records: MessageRecord[];
   if (count === 0) {
-    // Consume the snapshot for its cursor without retaining any records.
+    // Consume the snapshot for its cursor without retaining output rows.
     for (const entry of initial) { void entry; }
     records = [];
   } else records = last((function* () {
@@ -64,20 +66,24 @@ export async function tail(store: JsonlStore, count: number, filters: Filters,
     try { await delay(200, undefined, { signal }); }
     catch (error) { if (!signal.aborted) throw error; }
     if (signal.aborted) break;
-    const next = store.iterate({ filters, ...(cursor ? { cursor } : {}) });
-    for (const { record } of next) print(record);
+    const next = store.iterate(cursor ? { cursor } : {});
+    for (const { record } of next) {
+      const display = raw ? record : view.add(record);
+      if (display && matchesRecord(display, filters)) print(display);
+    }
     cursor = next.stats.cursor;
   }
   return 0;
 }
 
 const columns = ['v', 'ts', 'receivedAt', 'chatJid', 'chatName', 'chatType', 'fromMe',
-  'senderJid', 'senderName', 'pushName', 'body', 'mediaType', 'messageId', 'syncType', 'mediaPath'] as const;
+  'senderJid', 'senderName', 'pushName', 'body', 'mediaType', 'messageId', 'syncType',
+  'mediaPath', 'reconciliation', 'targetMessageId'] as const;
 function csv(value: unknown): string {
   const text = value == null ? '' : String(value);
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
-export function exportRecords(store: JsonlStore, filters: Filters, format: string, path: string): number {
+export function exportRecords(store: JsonlStore, filters: Filters, format: string, path: string, raw = false): number {
   const fd = openSync(path, 'wx', 0o600);
   let count = 0;
   const write = (data: string): void => {
@@ -91,7 +97,7 @@ export function exportRecords(store: JsonlStore, filters: Filters, format: strin
   };
   try {
     write(format === 'json' ? '[' : columns.join(',') + '\r\n');
-    for (const { record } of store.iterate({ filters })) {
+    for (const { record } of queryRecords(store, filters, raw)) {
       write(format === 'json' ? `${count ? ',' : ''}\n${JSON.stringify(record)}`
         : columns.map((key) => csv(record[key])).join(',') + '\r\n');
       count++;

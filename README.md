@@ -28,7 +28,8 @@ an npm-compatible tarball; this project does not publish to npm.
   are recorded. History backfill is on by default, but may be incomplete.
   Replayed message IDs are deduplicated within a daemon session, including
   reconnects; replay after a process restart can still create duplicates.
-  There is no edit/delete reconciliation or guarantee of a complete backup. Disappearing
+  Observed edits/deletes are reconciled in query views; a complete backup is not
+  guaranteed. Disappearing
   and view-once text/captions remain in the archive until local retention deletes
   them. Received attachments are archived locally by default, up to 64 MiB each;
   disable with `wallfly config set media_archival false` and restart. Unavailable
@@ -138,7 +139,8 @@ Search, tail, chats, who, alias, sends, and export use local files without a run
 Message reads include retained rotations in append order. Search defaults to a
 case-sensitive substring and readable lines with ISO time, chat, sender, and
 JSON-escaped body. `--json` emits an array of records with current display labels
-and optional manual-name markers; exports retain stored schema records. `--regex`
+and optional manual-name markers; exports retain stored name snapshots with
+reconciled text. `--regex`
 treats the query as a JavaScript regex source (no slash delimiters or flags).
 All filters combine with AND; time bounds are inclusive message timestamps,
 formatted as ISO datetimes with a timezone. Search limits select the first N
@@ -158,6 +160,40 @@ a new starting point. Export writes a JSON array or a CSV with all schema fields
 including a header and standard quoting for commas, quotes, and newlines. Output
 files use 0600; existing files are refused. Interrupted/failed exports can leave
 partial files; inspect or remove them before choosing the same destination again.
+
+### How edits/deletes appear
+
+`wallfly search`, `tail`, and `export` apply observed edits and revokes by default.
+An edit replaces the displayed text/caption and appends `[edited]`; a revoked
+message displays `[deleted]`. Caption edits retain the original `mediaPath`;
+revoked message views omit media references. Archived attachment files remain
+available through raw records and `wallfly open MESSAGE_ID`. Filters and limits operate on this current view,
+using the original message's chat, sender, timestamp, and position. Searching
+for old edited or revoked text returns no match. Multiple edits use the last
+retained reconciliation in append order; a revoke remains deleted after later edits.
+
+```sh
+wallfly search synthetic --json
+wallfly tail -n 20
+wallfly export --format json --out ./current.json
+wallfly search synthetic --raw --json
+wallfly tail --raw -n 20
+wallfly export --raw --format csv --out ./archive.csv
+```
+
+`--raw` reads untouched archive records, including original text, stored names,
+and the separate v2 reconciliation events. Raw JSON preserves archive fields;
+CSV includes `reconciliation` and `targetMessageId` columns. No edit or revoke
+rewrites or erases stored text: originals remain accessible in local files,
+raw reads, and backups until removed by retention or explicit local erasure.
+
+`tail -f` prints an updated original-message row when an edit/revoke arrives,
+including updates to messages outside its initial last N rows. `--raw -f` prints
+the newly appended event instead. Initial reconciled reads scan the complete
+retained archive before selecting results and keep the projection in memory;
+follow retains message state for the session. Only received reconciliations can
+be applied. Events whose original message is absent from the retained snapshot
+remain available through `--raw`, and apply if that original arrives later.
 
 ### Configuration
 
@@ -358,10 +394,15 @@ writing. New daemon records carry schema version `v: 2`; v1 records remain reada
 | `messageId` | string | Nonempty transport message identifier. |
 | `syncType` | `"notify"` or `"append"` (optional) | Live or history event; present on new daemon records. |
 
-All fields except `syncType` and `mediaPath` are required. Unknown metadata uses `null`,
+All fields except `syncType` and `mediaPath` are required. Original messages use
+v1 or v2. V2 reconciliation events also require `reconciliation: "edit" | "revoke"`
+and `targetMessageId`, identifying the original message in the same chat.
+`messageId` identifies the transport event (some updates reuse the target ID);
+`body` contains the new text/caption for edits and is empty for revokes.
+Ordinary v2 records omit reconciliation fields. Unknown metadata uses `null`,
 timestamps must be safe integers, and no phone-number format is imposed on JIDs. The exported
 `validateRecord(value)` type guard uses no schema library. `append` rejects
-invalid records and serializes only the fields above.
+invalid records and serializes only these schema fields.
 
 Incoming attachments are streamed to `~/.wallfly/media/<yyyy-mm>/<messageId>-<ext>`
 (UTC message month; directories `0700`, files `0600`). Safe MIME/filename

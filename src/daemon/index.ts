@@ -10,7 +10,7 @@ import type { MessageRecord } from '../store/index.js';
 import { NameCache } from './cache.js';
 import { privateDirectory, removeFile } from './files.js';
 import { authorized, ensureControlToken } from './token.js';
-import { mapMessage } from './map.js';
+import { mapMessage, mapMessageUpdate } from './map.js';
 import { archiveMedia } from './media.js';
 import { printPairingQr } from './pair.js';
 import type { PairingOutput } from './pair.js';
@@ -293,6 +293,14 @@ export class DaemonService {
         await this.refreshGroups(socket);
       });
       this.on(socket, 'messages.upsert', ({ messages, type }) => this.append(messages, type, socket));
+      this.on(socket, 'messages.update', (updates) => {
+        for (const update of updates) {
+          try {
+            const record = mapMessageUpdate(update, this.cache, socket.user?.id);
+            if (record) this.appendRecord(record);
+          } catch { this.log('message.append.failed'); }
+        }
+      });
       this.on(socket, 'messaging-history.set', async ({ contacts, chats, messages }) => {
         this.cache.contacts(contacts);
         this.cache.groups(chats.filter((chat) => chat.id.endsWith('@g.us'))
@@ -335,23 +343,36 @@ export class DaemonService {
       try { this.cache.message(message, socket.user?.id); }
       catch { this.log('message.identity.failed'); }
       try {
-        if (message.key.id && this.seenMessageIds.has(message.key.id)) continue;
         const record = mapMessage(message, type, this.cache, socket.user?.id);
-        if (record) {
-          if (record.mediaType && !record.fromMe && this.options.media_archival !== false) {
-            try {
-              if (!socket.downloadMedia) throw new Error('Media download unavailable.');
-              record.mediaPath = await archiveMedia(this.directory, message, record, socket.downloadMedia.bind(socket));
-            } catch { this.log('media.archive.failed'); }
-          }
-          this.store.append(record);
-          this.seenMessageIds.add(record.messageId);
-          this.recorded++;
-          recorded++;
+        if (!record || this.seenMessageIds.has(this.recordId(record))) continue;
+        if (record.reconciliation === undefined && record.mediaType && !record.fromMe
+          && this.options.media_archival !== false) {
+          try {
+            if (!socket.downloadMedia) throw new Error('Media download unavailable.');
+            record.mediaPath = await archiveMedia(this.directory, message, record, socket.downloadMedia.bind(socket));
+          } catch { this.log('media.archive.failed'); }
         }
+        if (this.appendRecord(record)) recorded++;
       } catch { this.log('message.append.failed'); }
     }
     if (type === 'append') this.log('history.wave', { recorded });
+  }
+
+  private recordId(record: MessageRecord): string {
+    return JSON.stringify(record.reconciliation === undefined ? [record.chatJid, record.messageId]
+      : [record.chatJid, record.targetMessageId, record.reconciliation,
+        ...(record.reconciliation === 'edit' ? [record.ts, record.body] : [])]);
+  }
+
+  private appendRecord(record: MessageRecord): boolean {
+    // Edits may reuse the original ID. Deduplicate the same protocol/upsert/update
+    // observation without suppressing a later edit or a revoke of that message.
+    const id = this.recordId(record);
+    if (this.seenMessageIds.has(id)) return false;
+    this.store.append(record);
+    this.seenMessageIds.add(id);
+    this.recorded++;
+    return true;
   }
 
   private scheduleReconnect(): void {

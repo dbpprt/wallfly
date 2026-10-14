@@ -16,6 +16,7 @@ import { auditEntries, exportRecords, tail } from './data.js';
 import { NameCache, normalizedJid } from '../daemon/cache.js';
 import { displayRecord } from './identity.js';
 import { localMediaPath } from '../daemon/media.js';
+import { queryRecords } from '../store/reconciliation.js';
 
 export interface CliDependencies {
   directory?: string;
@@ -33,9 +34,9 @@ const options: Record<string, NonNullable<ParseArgsConfig['options']>> = {
   start: {}, stop: {}, status: {}, pair: {}, config: {}, token: {}, alias: {}, chats: {}, who: {}, open: {},
   send: { to: string, text: string, image: string, caption: string, document: string, direct: boolean },
   sends: { limit: string },
-  search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean },
-  tail: { n: { ...string, short: 'n' }, follow: { ...boolean, short: 'f' }, chat: string },
-  export: { chat: string, ...dates, format: string, out: string },
+  search: { chat: string, sender: string, ...dates, regex: boolean, limit: string, json: boolean, raw: boolean },
+  tail: { n: { ...string, short: 'n' }, follow: { ...boolean, short: 'f' }, chat: string, raw: boolean },
+  export: { chat: string, ...dates, format: string, out: string, raw: boolean },
 };
 function integer(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
@@ -213,6 +214,7 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       let archivedPushname: string | null = null;
       let archivedPushnameTs = -1;
       for (const { record } of store.iterate()) {
+        if (record.reconciliation !== undefined) continue;
         if (identity.aliases.includes(normalizedJid(record.chatJid))) {
           count++;
           lastTs = Math.max(lastTs ?? 0, record.ts);
@@ -230,18 +232,19 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
       return count || identity.name || identity.phone || identity.groups.length || archivedPushname ? 0 : 3;
     }
     if (command === 'tail') return await tail(store, integer(str('n'), 10), filters, !!values.follow, signal,
-      (record) => print(displayRecord(new NameCache(directory), record)));
+      (record) => print(values.raw ? record : displayRecord(new NameCache(directory), record)), !!values.raw);
     if (command === 'export') {
       const format = str('format');
       const path = str('out');
       if ((format !== 'json' && format !== 'csv') || !path) throw new Error('export requires --format json|csv --out FILE.');
-      return exportRecords(store, filters, format, path);
+      return exportRecords(store, filters, format, path, !!values.raw);
     }
     if (command === 'chats') {
       const cache = new NameCache(directory);
       const chats = new Map<string, { jid: string; name: string | null; type: string; count: number; lastTs: number }>();
       const pushnames = new Map<string, { name: string; ts: number }>();
       for (const { record } of store.iterate()) {
+        if (record.reconciliation !== undefined) continue;
         const chat = chats.get(record.chatJid) ?? { jid: record.chatJid, name: record.chatName,
           type: record.chatType, count: 0, lastTs: 0 };
         chat.count++; chat.lastTs = Math.max(chat.lastTs, record.ts);
@@ -268,10 +271,10 @@ export async function runCli(args: string[], dependencies: CliDependencies = {})
     const records = [];
     const cache = new NameCache(directory);
     let count = 0;
-    if (limit > 0) for (const { record } of store.iterate({ filters })) {
-      const display = displayRecord(cache, record);
+    if (limit > 0) for (const { record } of queryRecords(store, filters, !!values.raw)) {
+      const display = values.raw ? record : displayRecord(cache, record);
       if (values.json) records.push(display);
-      else out(`${new Date(record.ts).toISOString()} ${JSON.stringify(display.chatName)}${display.chatManual ? ' [manual]' : ''} ${JSON.stringify(display.senderName)}${display.senderManual ? ' [manual]' : ''} ${JSON.stringify(record.body)}${record.mediaPath === undefined ? '' : ` mediaPath=${JSON.stringify(record.mediaPath)}`}\n`);
+      else out(`${new Date(record.ts).toISOString()} ${JSON.stringify(display.chatName)}${'chatManual' in display && display.chatManual ? ' [manual]' : ''} ${JSON.stringify(display.senderName)}${'senderManual' in display && display.senderManual ? ' [manual]' : ''} ${JSON.stringify(record.body)}${record.mediaPath === undefined ? '' : ` mediaPath=${JSON.stringify(record.mediaPath)}`}\n`);
       if ((values.json ? records.length : ++count) >= limit) break;
     }
     if (values.json) { print(records); return records.length ? 0 : 3; }

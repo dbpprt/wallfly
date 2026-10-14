@@ -93,7 +93,7 @@ with `syncType: "notify"` for live events or `"append"` for history events.
 `messaging-history.set` also records history as `"append"`. Old v1 records
 without this optional field remain valid. Message timestamps are converted
 from seconds to milliseconds; missing timestamps use local receipt time.
-Malformed messages, protocol-only events, and `status@broadcast` are skipped.
+Malformed messages, unrelated protocol-only events, and `status@broadcast` are skipped.
 Device suffixes are removed from chat/sender identifiers. Group records need
 a participant identifier; own messages need the linked account identifier.
 
@@ -104,9 +104,10 @@ Received attachment bytes are downloaded when `media_archival` is enabled
 content kinds can have an empty body. Successfully recorded message IDs are
 deduplicated in memory for the daemon session, including reconnects. The set
 grows with the session's unique messages and is lost on process restart, so
-replays after restart can still create duplicates. The append-only archive does
-not implement message edits/deletes or remove archived disappearing messages;
-retention follows the JSONL store's rotation policy.
+replays after restart can still create duplicates. Observed edits and revokes
+append v2 reconciliation events through upsert/history and `messages.update` handlers. Queries apply these events by default; `--raw`
+preserves original text and events. Disappearing-message expiry does not remove
+archived content; retention follows the JSONL store's rotation policy.
 
 Contact upserts/updates, group upserts/updates, and history names update
 `~/.wallfly/contacts.json` (mode `0600`). The file is atomically replaced and

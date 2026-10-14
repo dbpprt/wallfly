@@ -12,7 +12,7 @@ protect against processes running as your user, root, or compromised backups.
 
 | File | Contents and retention |
 | --- | --- |
-| `messages.jsonl` and numbered rotations | Schema-v2 text/captions (v1 remains readable), chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, optional live/history `syncType`, and optional relative `mediaPath`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
+| `messages.jsonl` and numbered rotations | Schema-v2 text/captions and edit/revoke events (kind, target ID, replacement text/caption; v1 remains readable), chat/sender JIDs and names, timestamps, message IDs, media kind, from-me flag, optional live/history `syncType`, and optional relative `mediaPath`. Default: 10 MiB current file and five retained rotations; older rotations are deleted. |
 | `media/<yyyy-mm>/<messageId>-<ext>` | Downloaded incoming images, documents, videos, audio, and stickers; UTC message month, directory `0700`, files `0600`, at most 64 MiB per file. No automatic rotation or expiry. |
 | `auth/` | Baileys linked-device credentials and encryption/session key material. Directory `0700`, files tightened to `0600` after writes. Treat as credentials. |
 | `auth/token` | Private 256-bit control API bearer token. Created on first start, reused until `wallfly token rotate`; rotation revokes the old token immediately. |
@@ -35,7 +35,10 @@ backfills can delete earlier records. Adjust `maxBytes`/`keepRotations` before p
 
 The application does record
 text/captions from disappearing or view-once wrappers; WhatsApp expiry,
-message edits, and deletion do not change existing archive records. History
+message edits, and deletion do not change existing archive records. Observed
+edits/deletes append reconciliation events: queries and exports display current
+text with `[edited]` or `[deleted]` by default. `--raw` exposes originals and
+events; a revoke does not erase text from disk or backups. History
 may be partial. Successfully recorded message IDs are deduplicated in memory
 for the daemon session, including reconnects; replay after a process restart
 can still create duplicates. Very old media can have a `mediaType` and an empty

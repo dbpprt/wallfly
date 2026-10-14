@@ -568,7 +568,7 @@ test('search/export surface mediaPath and open prints only an existing safe loca
   assert.equal((JSON.parse(readFileSync(exported, 'utf8')) as MessageRecord[])[0]!.mediaPath, mediaPath);
   assert.equal((await run(['export', '--format', 'csv', '--out', csv])).code, 0);
   const content = readFileSync(csv, 'utf8');
-  assert.ok(content.split('\r\n')[0]!.endsWith('mediaPath'));
+  assert.ok(content.split('\r\n')[0]!.split(',').includes('mediaPath'));
   assert.ok(content.includes(mediaPath));
   assert.deepEqual(await run(['open', record.messageId]), { code: 0, stdout: path + '\n', stderr: '' });
   assert.equal((await run(['open', 'synthetic-absent'])).code, 3);
@@ -589,4 +589,78 @@ test('open reports no archived media for legacy/text or gate-disabled records', 
   const result = await run(['open', 'synthetic-unarchived']);
   assert.equal(result.code, 3);
   assert.equal(result.stdout, '');
+});
+
+test('search/tail/export show reconciled text and deletions; --raw returns untouched archive fields', async (t) => {
+  const { run, store, records, directory } = setup(t);
+  const original = records[0]!;
+  store.append({ ...original, v: 2, reconciliation: 'edit', targetMessageId: original.messageId,
+    messageId: 'synthetic-edit-event', ts: Date.UTC(2026, 1, 1), body: 'synthetic-replacement' });
+  store.append({ ...records[2]!, v: 2, reconciliation: 'revoke', targetMessageId: records[2]!.messageId,
+    messageId: 'synthetic-revoke-event', body: '' });
+  const search = await run(['search', 'synthetic-replacement', '--json', '--to', '2026-01-01T00:00:00Z']);
+  assert.equal(search.code, 0, search.stderr);
+  assert.equal(JSON.parse(search.stdout)[0].body, 'synthetic-replacement [edited]');
+  assert.match((await run(['search', 'synthetic-replacement'])).stdout, /\[edited\]/);
+  assert.equal((await run(['search', 'synthetic-0'])).code, 3);
+  assert.equal((await run(['search', 'synthetic-2'])).code, 3);
+  const deleted = await run(['search', '[deleted]', '--json']);
+  assert.equal(deleted.code, 0);
+  assert.equal(JSON.parse(deleted.stdout)[0].messageId, records[2]!.messageId);
+  const tailed = jsonLines((await run(['tail', '-n', '10'])).stdout) as MessageRecord[];
+  assert.equal(tailed.length, 4);
+  assert.equal(tailed[0]!.body, 'synthetic-replacement [edited]');
+  assert.equal(tailed[2]!.body, '[deleted]');
+  assert.deepEqual(jsonLines((await run(['tail', '-n', '10', '--raw'])).stdout), store.filter().records);
+  const raw = await run(['search', '', '--json', '--raw']);
+  assert.deepEqual(JSON.parse(raw.stdout), store.filter().records);
+  for (const format of ['json', 'csv']) {
+    const path = join(directory, `synthetic-view.${format}`);
+    assert.equal((await run(['export', '--format', format, '--out', path])).code, 0);
+    const content = readFileSync(path, 'utf8');
+    assert.ok(content.includes('synthetic-replacement [edited]'));
+    assert.ok(content.includes('[deleted]'));
+    assert.ok(!content.includes('synthetic-0'));
+    assert.ok(!content.includes('synthetic-2'));
+    if (format === 'json') assert.equal(JSON.parse(content).length, 4);
+    const rawPath = join(directory, `synthetic-raw.${format}`);
+    assert.equal((await run(['export', '--format', format, '--out', rawPath, '--raw'])).code, 0);
+    const rawContent = readFileSync(rawPath, 'utf8');
+    if (format === 'json') assert.deepEqual(JSON.parse(rawContent), store.filter().records);
+    else {
+      assert.match(rawContent, /reconciliation,targetMessageId/);
+      assert.ok(rawContent.includes('edit,synthetic-id-0'));
+      assert.ok(rawContent.includes('revoke,synthetic-id-2'));
+    }
+  }
+  const chats = jsonLines((await run(['chats'])).stdout) as { count: number }[];
+  assert.deepEqual(chats.map((chat) => chat.count), [3, 1]);
+});
+
+test('tail follow emits reconciled updates of old messages and --raw emits appended events', async (t) => {
+  const { run, store, records } = setup(t);
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  let viewOutput = ''; let rawOutput = '';
+  const view = run(['tail', '-n', '0', '-f', '--chat', records[0]!.chatJid], {
+    signal: controller.signal, stdout: (text) => { viewOutput += text; },
+  });
+  const raw = run(['tail', '-n', '0', '-f', '--raw'], {
+    signal: controller.signal, stdout: (text) => { rawOutput += text; },
+  });
+  await delay(20);
+  const edit: MessageRecord = { ...records[0]!, v: 2, reconciliation: 'edit',
+    targetMessageId: records[0]!.messageId, messageId: 'synthetic-follow-edit', body: 'synthetic-follow-text' };
+  store.append(edit);
+  await eventually(() => viewOutput.includes('[edited]') && rawOutput.includes('synthetic-follow-edit'));
+  const revoke: MessageRecord = { ...edit, reconciliation: 'revoke', messageId: 'synthetic-follow-revoke', body: '' };
+  store.append(revoke);
+  await eventually(() => viewOutput.includes('[deleted]') && rawOutput.includes('synthetic-follow-revoke'));
+  controller.abort();
+  assert.equal((await view).code, 0);
+  assert.equal((await raw).code, 0);
+  const displayed = jsonLines(viewOutput) as MessageRecord[];
+  assert.deepEqual(displayed.map((record) => record.body), ['synthetic-follow-text [edited]', '[deleted]']);
+  assert.deepEqual(displayed.map((record) => record.messageId), [records[0]!.messageId, records[0]!.messageId]);
+  assert.deepEqual(jsonLines(rawOutput), [edit, revoke]);
 });

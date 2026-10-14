@@ -9,10 +9,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { TestContext } from 'node:test';
 import { CursorExpiredError, JsonlStore, validateRecord } from '../src/store/index.js';
-import type { MessageRecord, StoreOptions } from '../src/store/index.js';
+import type { ArchivedMessage, MessageRecord, ReconciliationRecord, StoreOptions } from '../src/store/index.js';
+import { queryRecords } from '../src/store/reconciliation.js';
 
 // Deliberately synthetic identifiers and marker strings, never captured chat data.
-function record(overrides: Partial<MessageRecord> = {}): MessageRecord {
+function record(overrides: Partial<ArchivedMessage> = {}): ArchivedMessage {
   return {
     v: 1, ts: 1000, receivedAt: 2000, chatJid: 'test-chat-a@invalid', chatName: null,
     chatType: 'dm', fromMe: false, senderJid: 'test-sender-a@invalid', senderName: null,
@@ -279,4 +280,49 @@ test('mixed v1/v2 records read unchanged; v2 mediaPath persists and unsafe paths
     assert.equal(validateRecord({ ...archived, mediaPath }), false);
   }
   assert.equal(validateRecord({ ...archived, v: 1 }), false);
+});
+
+test('v2 events append without changing original bytes, validate and serialize only schema fields', (t) => {
+  const store = setup(t);
+  const original = record();
+  store.append(original);
+  const prefix = readFileSync(store.path);
+  const edit: ReconciliationRecord = { ...original, v: 2, reconciliation: 'edit',
+    targetMessageId: original.messageId, messageId: 'synthetic-edit-id', body: 'synthetic-new',
+    mediaPath: 'media/2026-01/synthetic-edit-id-jpg' };
+  const revoke: ReconciliationRecord = { ...edit, reconciliation: 'revoke', body: '', messageId: 'synthetic-revoke-id' };
+  assert.equal(validateRecord(edit), true);
+  assert.equal(validateRecord(revoke), true);
+  for (const invalid of [{ ...edit, targetMessageId: '' }, { ...edit, reconciliation: 'other' },
+    { ...edit, v: 1 }, { ...revoke, body: 'synthetic-forbidden' }, { ...edit, body: null },
+    { ...edit, mediaPath: '../synthetic-unsafe-path' }]) {
+    assert.equal(validateRecord(invalid), false);
+  }
+  store.append({ ...edit, ignoredMetadata: 'synthetic-extra' } as unknown as MessageRecord);
+  store.append(revoke);
+  assert.deepEqual(readFileSync(store.path).subarray(0, prefix.length), prefix);
+  assert.deepEqual(store.filter().records, [original, edit, revoke]);
+  assert.deepEqual([...queryRecords(store)].map(({ record }) => record), [{ ...original, body: '[deleted]' }]);
+});
+
+test('reconciliation spans rotations, matches chat and target, handles early events and terminal revokes', (t) => {
+  const store = setup(t, { maxBytes: 1, keepRotations: 12 });
+  const original = record();
+  const edit: ReconciliationRecord = { ...original, v: 2, reconciliation: 'edit',
+    targetMessageId: original.messageId, messageId: 'synthetic-edit-id', body: 'synthetic-new', ts: 9000 };
+  store.append(edit); // History can deliver the original after the update.
+  store.append(original);
+  const other = record({ chatJid: 'test-other@invalid' });
+  store.append(other); // Same message ID in another chat must remain unchanged.
+  const read = (filters = {}) => [...queryRecords(store, filters)].map(({ record }) => record);
+  assert.deepEqual(read(), [{ ...original, body: 'synthetic-new [edited]' }, other]);
+  assert.deepEqual(read({ text: 'synthetic-new', to: original.ts }), [{ ...original, body: 'synthetic-new [edited]' }]);
+  assert.deepEqual(read({ text: 'synthetic-A', chatJid: original.chatJid }), []);
+  store.append({ ...edit, messageId: 'synthetic-edit-2', body: 'synthetic-latest' });
+  assert.equal(read()[0]!.body, 'synthetic-latest [edited]');
+  store.append({ ...edit, reconciliation: 'revoke', messageId: 'synthetic-revoke', body: '' });
+  store.append({ ...edit, messageId: 'synthetic-late-edit' });
+  assert.equal(read()[0]!.body, '[deleted]');
+  assert.deepEqual(read({ text: 'synthetic-latest' }), []);
+  assert.deepEqual([...queryRecords(store, {}, true)].map(({ record }) => record), store.filter().records);
 });

@@ -1,6 +1,5 @@
-/** Version 1/2 timestamps are nonnegative Unix milliseconds. Missing metadata is null. */
-export interface MessageRecord {
-  v: 1 | 2;
+/** Archive timestamps are nonnegative Unix milliseconds. Missing metadata is null. */
+interface RecordFields {
   ts: number;
   receivedAt: number;
   chatJid: string;
@@ -19,6 +18,21 @@ export interface MessageRecord {
   syncType?: 'notify' | 'append';
 }
 
+export interface ArchivedMessage extends RecordFields {
+  v: 1 | 2;
+  reconciliation?: never;
+  targetMessageId?: never;
+}
+
+/** A new archive event; messageId identifies the event, targetMessageId its subject. */
+export interface ReconciliationRecord extends RecordFields {
+  v: 2;
+  reconciliation: 'edit' | 'revoke';
+  targetMessageId: string;
+}
+
+export type MessageRecord = ArchivedMessage | ReconciliationRecord;
+
 const nullableString = (value: unknown): boolean => value === null || typeof value === 'string';
 const timestamp = (value: unknown): boolean =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -30,11 +44,16 @@ export function validateMediaPath(value: unknown): value is string {
     && /^media\/\d{4}-(?:0[1-9]|1[0-2])\/[A-Za-z0-9_-]{1,160}-[a-z0-9]{1,10}$/.test(value);
 }
 
-/** Required fields shared by v1/v2; unknown versions are rejected. */
+/** Read v1 messages and shared v2 media/reconciliation records. */
 export function validateRecord(value: unknown): value is MessageRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return (record.v === 1 || record.v === 2) && timestamp(record.ts) && timestamp(record.receivedAt)
+  const reconciliation = record.reconciliation === undefined
+    ? record.targetMessageId === undefined
+    : record.v === 2 && (record.reconciliation === 'edit' || record.reconciliation === 'revoke')
+      && identifier(record.targetMessageId)
+      && (record.reconciliation !== 'revoke' || record.body === '');
+  return reconciliation && (record.v === 1 || record.v === 2) && timestamp(record.ts) && timestamp(record.receivedAt)
     && identifier(record.chatJid) && nullableString(record.chatName)
     && (record.chatType === 'dm' || record.chatType === 'group')
     && typeof record.fromMe === 'boolean' && identifier(record.senderJid)
