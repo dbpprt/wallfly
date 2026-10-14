@@ -1,0 +1,7 @@
+node_modules/
+dist/
+auth/
+*.session
+*.log
+.env
+coverage/
