@@ -87,7 +87,7 @@ crash-atomic transaction. Message appends are not fsynced by default; audit
 appends always are. The audit has no automatic rotation.
 
 Configuration is validated by the CLI, atomically replaced, and applied on
-restart. Read-only CLI commands query local retained files without a daemon.
+restart. Query CLI commands read local retained files without a daemon.
 Exports are private JSON/CSV files; an existing destination is refused.
 
 ## Build and release

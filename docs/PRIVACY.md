@@ -55,14 +55,18 @@ Destinations, paths, and hashes remain sensitive metadata. Hashes of predictable
 text can be guessed; hashing is not anonymization. The separate message archive
 may contain the plaintext of your sent messages when WhatsApp echoes them back.
 
-## What never leaves through wallfly's data handling
+## What never leaves automatically
 
-wallfly never uploads the archive files, name-cache file, configuration file,
-send audit file, search queries, local exports, or backups to a wallfly service
-or third party. It has no upload/sync/telemetry path for those artifacts. Local
-media paths and audit hashes are not fields in the outgoing WhatsApp message;
-a document's basename is transmitted as its filename. CLI output and operator
-backups/export-sharing remain under the operator's control.
+During collection, search, and export, the archive files, name-cache file,
+configuration, send audit, search queries, exports, and backups stay local.
+wallfly has no background upload, cloud sync, or telemetry path for these
+artifacts. Local media paths and audit hashes are never added as fields to
+outgoing WhatsApp messages; a document's basename is transmitted as its filename.
+CLI output and operator backups/export-sharing remain under the operator's control.
+
+An explicit document send can transmit any selected readable local file,
+including an archive or export. The local-storage promise does not override
+that explicit selection. Choose attachment paths with that in mind.
 
 This is a statement about local artifacts, not a promise of no network traffic:
 authentication/key material is used in WhatsApp's linked-device protocol, and
