@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import type { WASocket, WAMessageKey } from '@whiskeysockets/baileys';
+import type { AuthenticationState, WASocket, WAMessageKey } from '@whiskeysockets/baileys';
 import { privateDirectory } from '../daemon/files.js';
 import { validJid } from '../daemon/identity.js';
 import { appendAudit } from './audit.js';
@@ -40,9 +40,19 @@ export interface SendTransport {
 }
 
 /** All access to the Baileys outgoing API stays in this module. */
-export function bindSendTransport(socket: Pick<WASocket, 'sendMessage' | 'readMessages' | 'sendPresenceUpdate'>): SendTransport {
+export function bindSendTransport(
+  socket: Pick<WASocket, 'sendMessage' | 'readMessages' | 'sendPresenceUpdate'>,
+  keys: Pick<AuthenticationState['keys'], 'set'>,
+): SendTransport {
   return {
-    message: async (jid, content) => (await socket.sendMessage(jid, content))?.key.id ?? null,
+    message: async (jid, content) => {
+      // Baileys does not invalidate this cache when a participant adds a device.
+      // Its retry path performs the same reset before redistributing sender keys.
+      if (jid.endsWith('@g.us')) {
+        await keys.set({ 'sender-key-memory': { [jid]: null } });
+      }
+      return (await socket.sendMessage(jid, content))?.key.id ?? null;
+    },
     receipts: (keys) => socket.readMessages(keys),
     presence: (jid) => socket.sendPresenceUpdate('available', jid),
   };

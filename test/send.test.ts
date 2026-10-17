@@ -210,17 +210,27 @@ test('disconnect during enabled presence prevents receipts and message execution
   assert.equal(state.records().length, 1);
 });
 
-test('Baileys adapter forwards only the explicit outgoing operations', async () => {
+test('Baileys adapter resets sender-key memory only immediately before group sends', async () => {
   const calls: unknown[] = [];
   const transport = bindSendTransport({
     sendMessage: async (target, content) => { calls.push([target, content]); return undefined; },
     readMessages: async (keys) => { calls.push(keys); },
     sendPresenceUpdate: async (type, target) => { calls.push([type, target]); },
+  }, {
+    set: async (data) => { calls.push(['keys.set', data]); },
   });
   assert.equal(await transport.message(jid, { text: 'synthetic-text' }), null);
+  const groupJid = 'synthetic-group@g.us';
+  assert.equal(await transport.message(groupJid, { text: 'synthetic-group-text' }), null);
   await transport.receipts(readKeys);
   await transport.presence(jid);
-  assert.deepEqual(calls, [[jid, { text: 'synthetic-text' }], readKeys, ['available', jid]]);
+  assert.deepEqual(calls, [
+    [jid, { text: 'synthetic-text' }],
+    ['keys.set', { 'sender-key-memory': { [groupJid]: null } }],
+    [groupJid, { text: 'synthetic-group-text' }],
+    readKeys,
+    ['available', jid],
+  ]);
 });
 
 test('persisted config defaults OFF, accepts boolean opt-ins, and rejects malformed/unsafe values', (t) => {
