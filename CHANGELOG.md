@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Redistribute sender keys before every explicit group send so devices added to
+  a participant do not remain stuck on an undecryptable message placeholder.
+- Stop refreshing group metadata after three consecutive failures per JID,
+  while retrying after a successful refresh or reconnect.
+
 ### Added
 
 - Archive incoming media locally by default, with a 64 MiB cap, private files,

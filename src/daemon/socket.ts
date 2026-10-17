@@ -102,7 +102,7 @@ export async function createBaileysSocket(options: SocketOptions,
     ev: socket.ev,
     // No reuploadRequest: expired media must not trigger an automatic outgoing request.
     downloadMedia: (message) => baileys.downloadMediaMessage(message, 'stream', { options: { timeout: 30000 } }),
-    outgoing: bindSendTransport(socket),
+    outgoing: bindSendTransport(socket, state.keys),
     get user() { return socket.user; },
     groupMetadata: (jid) => socket.groupMetadata(jid),
     groupFetchAllParticipating: () => socket.groupFetchAllParticipating(),

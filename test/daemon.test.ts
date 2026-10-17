@@ -600,13 +600,53 @@ test('connect and group events refresh all known participants; failures stay loc
   socket.emit('messages.upsert', { type: 'notify', messages: [message()] });
   await service.flush();
   assert.equal(service.status().recordedMessages, 1);
-  assert.ok(logs.some((entry) => entry.event === 'group.metadata.failed'));
+  assert.deepEqual(logs.find((entry) => entry.event === 'group.metadata.failed')?.details,
+    { jid: group.id, consecutiveFailures: 1 });
   fail = false;
   members = group.participants;
   socket.emit('groups.upsert', [group]);
   await service.flush();
   assert.equal(service.cache.identity(lid).groups.length, 1);
   assert.deepEqual(socket.outgoingCalls, []);
+});
+
+test('group metadata refreshes stop after three failures and retry after reconnect', async (t) => {
+  const { service, socket, calls, logs } = setup(t, { backoffBaseMs: 1, backoffMaxMs: 1 });
+  const group = { id: 'synthetic-failing-group@g.us', subject: 'synthetic-failing-group',
+    addressingMode: 'pn' as const };
+  let fail = true;
+  let fetched = 0;
+  (socket as FakeSocket & Pick<Required<ListenerSocket>, 'groupMetadata'>).groupMetadata = async () => {
+    fetched++;
+    if (fail) throw new Error('synthetic-sensitive-error');
+    return { ...group, owner: undefined, participants: [] };
+  };
+  await service.start();
+  socket.emit('connection.update', { connection: 'open' });
+  await service.flush();
+  for (let wave = 0; wave < 4; wave++) {
+    socket.emit('messaging-history.set', { contacts: [], chats: [group], messages: [] });
+  }
+  await service.flush();
+  assert.equal(fetched, 3);
+  assert.deepEqual(logs.filter((entry) => entry.event === 'group.metadata.failed').map((entry) => entry.details), [
+    { jid: group.id, consecutiveFailures: 1 },
+    { jid: group.id, consecutiveFailures: 2 },
+    { jid: group.id, consecutiveFailures: 3 },
+  ]);
+
+  socket.emit('connection.update', { connection: 'close' });
+  await eventually(() => calls.length === 2);
+  fail = false;
+  socket.emit('connection.update', { connection: 'open' });
+  await service.flush();
+  assert.equal(fetched, 4);
+  fail = true;
+  socket.emit('messaging-history.set', { contacts: [], chats: [group], messages: [] });
+  await service.flush();
+  assert.equal(fetched, 5);
+  assert.deepEqual(logs.filter((entry) => entry.event === 'group.metadata.failed').at(-1)?.details,
+    { jid: group.id, consecutiveFailures: 1 });
 });
 
 test('live/history pushnames and sender fields are harvested even on deduplicated messages', async (t) => {

@@ -41,7 +41,8 @@ export interface DaemonDependencies {
   socketFactory?: SocketFactory;
   pairingOutput?: PairingOutput;
   store?: { append(record: MessageRecord): unknown };
-  log?: (event: string, details?: { attempt: number; delayMs: number } | { recorded: number }) => void;
+  log?: (event: string, details?: { attempt: number; delayMs: number } | { recorded: number }
+    | { jid: string; consecutiveFailures: number }) => void;
 }
 
 export interface DaemonStatus {
@@ -93,6 +94,7 @@ export class DaemonService {
   private recorded = 0;
   // Keep successful IDs across socket reconnects for this service's lifetime.
   private readonly seenMessageIds = new Set<string>();
+  private readonly groupMetadataFailures = new Map<string, number>();
 
   constructor(options: DaemonOptions = {}, dependencies: DaemonDependencies = {}) {
     validateOptions(options);
@@ -245,6 +247,8 @@ export class DaemonService {
       const socket = await this.factory({ authDirectory: this.authDirectory, markOnlineOnConnect: false,
         log: (event) => this.log(event), observeLidMapping: (lid, pn) => this.cache.lidMap.observe(lid, pn) });
       if (!this.running) { socket.end(undefined); return; }
+      // A fresh connection is allowed to retry groups that failed on the old socket.
+      this.groupMetadataFailures.clear();
       this.socket = socket;
       this.on(socket, 'creds.update', () => socket.saveCredentials());
       this.on(socket, 'connection.update', async (update) => {
@@ -319,8 +323,15 @@ export class DaemonService {
     if (!socket.groupMetadata || this.state !== 'connected') return;
     for (const jid of this.cache.knownGroups()) {
       if (!this.running || this.socket !== socket) return;
-      try { this.cache.groups([await socket.groupMetadata(jid)]); }
-      catch { this.log('group.metadata.failed'); }
+      if ((this.groupMetadataFailures.get(jid) ?? 0) >= 3) continue;
+      try {
+        this.cache.groups([await socket.groupMetadata(jid)]);
+        this.groupMetadataFailures.delete(jid);
+      } catch {
+        const consecutiveFailures = (this.groupMetadataFailures.get(jid) ?? 0) + 1;
+        this.groupMetadataFailures.set(jid, consecutiveFailures);
+        this.log('group.metadata.failed', { jid, consecutiveFailures });
+      }
     }
   }
 
