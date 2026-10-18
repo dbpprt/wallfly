@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import type { AuthenticationState, WASocket, WAMessageKey } from '@whiskeysockets/baileys';
 import { privateDirectory } from '../daemon/files.js';
-import { validJid } from '../daemon/identity.js';
+import { normalizedJid, validJid } from '../daemon/identity.js';
 import { appendAudit } from './audit.js';
 
 export interface SendRequest {
@@ -34,6 +34,8 @@ export type OutgoingContent = { text: string }
 
 /** The daemon carries this port but never invokes its outgoing operations. */
 export interface SendTransport {
+  /** Resolve once before auditing; outgoing operations use that exact destination. */
+  resolveJid?(jid: string): string;
   message(jid: string, content: OutgoingContent): Promise<string | null>;
   receipts(keys: WAMessageKey[]): Promise<void>;
   presence(jid: string): Promise<void>;
@@ -41,10 +43,19 @@ export interface SendTransport {
 
 /** All access to the Baileys outgoing API stays in this module. */
 export function bindSendTransport(
-  socket: Pick<WASocket, 'sendMessage' | 'readMessages' | 'sendPresenceUpdate'>,
+  socket: Pick<WASocket, 'sendMessage' | 'readMessages' | 'sendPresenceUpdate'>
+    & Partial<Pick<WASocket, 'user'>>,
   keys: Pick<AuthenticationState['keys'], 'set'>,
+  resolveLid?: (phoneJid: string) => string | undefined,
 ): SendTransport {
   return {
+    resolveJid: (jid) => {
+      const user = socket.user;
+      if (!user || !jid.endsWith('@s.whatsapp.net') || jid !== normalizedJid(user.id)) return jid;
+      const lid = user.lid ? normalizedJid(user.lid) : undefined;
+      const target = lid && validJid(lid) && lid.endsWith('@lid') ? lid : resolveLid?.(jid);
+      return validJid(target) && target.endsWith('@lid') ? target : jid;
+    },
     message: async (jid, content) => {
       // Baileys does not invalidate this cache when a participant adds a device.
       // Its retry path performs the same reset before redistributing sender keys.
@@ -173,7 +184,8 @@ export class SendService {
           : { document: bytes, caption: text, fileName: basename(absolutePath!), mimetype: 'application/octet-stream' };
       }
     } catch { throw new SendError(400, 'Media must be a readable local regular file, 1 byte to 64 MiB.'); }
-    const audit: SendAuditRecord = { v: 1, ts: Date.now(), jid: request.jid, kind,
+    const jid = transport.resolveJid?.(request.jid) ?? request.jid;
+    const audit: SendAuditRecord = { v: 1, ts: Date.now(), jid, kind,
       textSha256: createHash('sha256').update(text).digest('hex'), mediaPath: absolutePath };
     try {
       privateDirectory(this.directory);
@@ -186,11 +198,11 @@ export class SendService {
     };
     try {
       active();
-      if (this.options.presence) { await transport.presence(request.jid); active(); }
+      if (this.options.presence) { await transport.presence(jid); active(); }
       if (this.options.read_receipts && request.readKeys?.length) {
         await transport.receipts(request.readKeys); active();
       }
-      return { messageId: await transport.message(request.jid, content), audit };
+      return { messageId: await transport.message(jid, content), audit };
     } catch (error) {
       if (error instanceof SendError) throw error;
       throw new SendError(502, 'Outgoing operation failed; delivery may be uncertain. Check before retrying.');

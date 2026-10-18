@@ -233,6 +233,73 @@ test('Baileys adapter resets sender-key memory only immediately before group sen
   ]);
 });
 
+test('self-chat routing audits the actual destination before any outgoing operation', async (t) => {
+  const owner = 'synthetic-owner@s.whatsapp.net';
+  const lid = 'synthetic-owner@lid';
+  const cachedLid = 'synthetic-cached-owner@lid';
+  const cases = [
+    { name: 'socket LID wins over cache', target: owner, lid, cachedLid, expected: lid },
+    { name: 'device-qualified socket LID', target: owner, lid: 'synthetic-owner:7@lid', expected: lid },
+    { name: 'observed cache fallback', target: owner, cachedLid, expected: cachedLid },
+    { name: 'unknown LID keeps PN', target: owner, expected: owner },
+    { name: 'invalid socket LID uses cache', target: owner, lid: owner, cachedLid, expected: cachedLid },
+    { name: 'other person unchanged', target: jid, lid, cachedLid, expected: jid },
+    { name: 'group unchanged', target: 'synthetic-group@g.us', lid, cachedLid, expected: 'synthetic-group@g.us' },
+    { name: 'explicit LID unchanged', target: lid, lid, cachedLid, expected: lid },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async (t) => {
+    const state = setup(t);
+    const calls: string[] = [];
+    const assertAudited = (target: string): void => {
+      assert.equal(target, scenario.expected);
+      assert.equal(state.records().at(-1)?.jid, target);
+    };
+    const transport = bindSendTransport({
+      user: { id: 'synthetic-owner:3@s.whatsapp.net',
+        ...('lid' in scenario ? { lid: scenario.lid } : {}) },
+      sendMessage: async (target) => { assertAudited(target); calls.push('message'); return undefined; },
+      readMessages: async () => { assert.fail('Unexpected receipts'); },
+      sendPresenceUpdate: async (_, target) => { assertAudited(target!); calls.push('presence'); },
+    }, {
+      set: async () => {
+        assertAudited(scenario.target);
+        assert.equal(scenario.target.endsWith('@g.us'), true);
+        calls.push('keys.set');
+      },
+    }, (pn) => {
+      assert.equal(pn, owner);
+      calls.push('resolveLid');
+      return 'cachedLid' in scenario ? scenario.cachedLid : undefined;
+    });
+    const service = new SendService({ directory: state.directory, presence: true }, () => transport);
+    const result = await service.sendWithAudit({ jid: scenario.target, text: 'synthetic-text' });
+    assert.equal(result.audit.jid, scenario.expected);
+    const usesCache = scenario.target === owner && (!('lid' in scenario) || scenario.lid === owner);
+    assert.deepEqual(calls, [...(usesCache ? ['resolveLid'] : []), 'presence',
+      ...(scenario.target.endsWith('@g.us') ? ['keys.set'] : []), 'message']);
+  });
+});
+
+test('self-chat identity is read at send time and the resolved destination is kept after audit', async (t) => {
+  const state = setup(t);
+  const socket = {
+    user: undefined as { id: string; lid?: string } | undefined,
+    sendMessage: async (target: string) => {
+      assert.equal(target, state.records().at(-1)?.jid);
+      return undefined;
+    },
+    readMessages: async () => {},
+    sendPresenceUpdate: async () => {
+      socket.user = { id: jid, lid: 'synthetic-changed@lid' };
+    },
+  };
+  const transport = bindSendTransport(socket, { set: async () => {} });
+  const service = new SendService({ directory: state.directory, presence: true }, () => transport);
+  assert.equal((await service.sendWithAudit({ jid, text: 'synthetic-text' })).audit.jid, jid);
+  socket.user = { id: jid, lid: 'synthetic-current@lid' };
+  assert.equal((await service.sendWithAudit({ jid, text: 'synthetic-text' })).audit.jid, 'synthetic-current@lid');
+});
+
 test('persisted config defaults OFF, accepts boolean opt-ins, and rejects malformed/unsafe values', (t) => {
   const { directory } = setup(t);
   assert.deepEqual(loadSendConfig(directory), {});

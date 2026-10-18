@@ -126,6 +126,15 @@ function control(port: number, method: string, path: string, body?: string,
   });
 }
 
+test('socket receives a resolver backed by the daemon live LID cache', async (t) => {
+  const { service, calls } = setup(t);
+  await service.start();
+  const owner = 'synthetic-owner@s.whatsapp.net';
+  assert.equal(calls[0]!.resolveLid!(owner), undefined);
+  service.cache.lidMap.observe('synthetic-owner@lid', owner);
+  assert.equal(calls[0]!.resolveLid!(owner), 'synthetic-owner@lid');
+});
+
 test('maps schema v2 with cached names, timestamps, sync type, group sender, and own device JID', (t) => {
   const cache = new NameCache(directory(t));
   cache.contacts([{ id: 'test-chat@invalid', name: 'synthetic-chat' },

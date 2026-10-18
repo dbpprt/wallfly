@@ -245,7 +245,8 @@ export class DaemonService {
     if (!this.running) return;
     try {
       const socket = await this.factory({ authDirectory: this.authDirectory, markOnlineOnConnect: false,
-        log: (event) => this.log(event), observeLidMapping: (lid, pn) => this.cache.lidMap.observe(lid, pn) });
+        log: (event) => this.log(event), observeLidMapping: (lid, pn) => this.cache.lidMap.observe(lid, pn),
+        resolveLid: (jid) => this.cache.lidMap.aliases(jid).find((alias) => alias.endsWith('@lid')) });
       if (!this.running) { socket.end(undefined); return; }
       // A fresh connection is allowed to retry groups that failed on the old socket.
       this.groupMetadataFailures.clear();
