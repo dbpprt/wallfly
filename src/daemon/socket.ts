@@ -31,6 +31,7 @@ export interface SocketOptions {
   version?: WAVersion;
   log?: (event: string) => void;
   observeLidMapping?: (lid: string, pn: string) => void;
+  resolveLid?: (phoneJid: string) => string | undefined;
 }
 export type SocketFactory = (options: SocketOptions) => Promise<ListenerSocket>;
 
@@ -102,7 +103,10 @@ export async function createBaileysSocket(options: SocketOptions,
     ev: socket.ev,
     // No reuploadRequest: expired media must not trigger an automatic outgoing request.
     downloadMedia: (message) => baileys.downloadMediaMessage(message, 'stream', { options: { timeout: 30000 } }),
-    outgoing: bindSendTransport(socket, state.keys),
+    outgoing: bindSendTransport(socket, state.keys, options.resolveLid ?? ((jid) => {
+      fallbackMap ??= new LidMap(dirname(options.authDirectory));
+      return fallbackMap.aliases(jid).find((alias) => alias.endsWith('@lid'));
+    })),
     get user() { return socket.user; },
     groupMetadata: (jid) => socket.groupMetadata(jid),
     groupFetchAllParticipating: () => socket.groupFetchAllParticipating(),

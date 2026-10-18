@@ -144,6 +144,31 @@ test('saved and newly written auth LID mappings reach identity persistence offli
 });
 
 
+test('send transport resolves self through the supplied live LID cache', async (t) => {
+  const { create, options, dependencies, rawSocket } = await setup(t);
+  const owner = 'synthetic-owner@s.whatsapp.net';
+  Object.assign(rawSocket, { user: { id: 'synthetic-owner:2@s.whatsapp.net' } });
+  const { LidMap } = await import('../src/daemon/identity.js');
+  const map = new LidMap(options.authDirectory);
+  const socket = await create({ ...options, version: overrideVersion,
+    observeLidMapping: (lid, pn) => map.observe(lid, pn),
+    resolveLid: (jid) => map.aliases(jid).find((alias) => alias.endsWith('@lid')) }, dependencies);
+  assert.equal(socket.outgoing.resolveJid!(owner), owner);
+  map.observe('synthetic-owner@lid', owner);
+  assert.equal(socket.outgoing.resolveJid!(owner), 'synthetic-owner@lid');
+});
+
+test('direct socket resolves self from the saved LID cache without an injected resolver', async (t) => {
+  const { create, options, dependencies, rawSocket } = await setup(t);
+  const owner = 'synthetic-owner@s.whatsapp.net';
+  Object.assign(rawSocket, { user: { id: 'synthetic-owner:2@s.whatsapp.net' } });
+  const { LidMap } = await import('../src/daemon/identity.js');
+  new LidMap(options.authDirectory).observe('synthetic-owner@lid', owner);
+  const socket = await create({ ...options, authDirectory: join(options.authDirectory, 'auth'),
+    version: overrideVersion }, dependencies);
+  assert.equal(socket.outgoing.resolveJid!(owner), 'synthetic-owner@lid');
+});
+
 test('media adapter requests a stream with a timeout and no reupload context', async (t) => {
   const { create, options, dependencies } = await setup(t);
   const { PassThrough } = await import('node:stream');

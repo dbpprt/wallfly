@@ -32,6 +32,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   `audit_rotations` config controls retention and `wallfly sends` reads retained
   history. Rotation failures block outgoing operations.
 
+## [0.1.3] - 2026-10-18
+
+### Fixed
+
+- Route explicit self-chat sends to the owner's LID when exposed by the socket
+  or known in the observed LID cache, preventing undecryptable PN self-chat sends.
+  Audit the resolved destination before transmission; retain the PN destination
+  when no LID is known. Other recipients and group sender-key handling are unchanged.
+
 ## [0.1.0] - 2026-10-14
 
 ### Added
@@ -51,5 +60,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   and a CLI tarball asset. No npm publication.
 - Architecture, privacy, security, limitations, FAQ, comparison, and unlink docs.
 
-[Unreleased]: https://github.com/dbpprt/wallfly/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dbpprt/wallfly/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/dbpprt/wallfly/compare/v0.1.2...v0.1.3
 [0.1.0]: https://github.com/dbpprt/wallfly/releases/tag/v0.1.0
