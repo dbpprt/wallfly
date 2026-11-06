@@ -16,13 +16,8 @@ jobs:
       matrix:
         node: [20, 22]
     steps:
-<<<<<<< HEAD
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v7
-=======
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v4
->>>>>>> f924466b6df5beabed9a5dfad8c7142f4571191f
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -59,13 +54,8 @@ jobs:
     permissions:
       contents: write
     steps:
-<<<<<<< HEAD
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v8
-=======
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v4
->>>>>>> 245307bc27b85860e0b7561e04a25788d3861e04
+      - uses: actions/download-artifact@v8
         with:
           name: release-tarball
           path: release-assets
