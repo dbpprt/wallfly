@@ -41,7 +41,9 @@ async function setup(t: TestContext) {
       saveCreds: async () => {},
     }),
   };
-  const log = t.mock.fn((event: string) => { assert.equal(event, 'socket.version.fallback'); });
+  const log = t.mock.fn((event: string) => {
+    assert.ok(['socket.version.fallback', 'socket.agent-family-4'].includes(event), event);
+  });
   const options = { authDirectory, markOnlineOnConnect: false as const, log };
   return { create, dependencies, options, log, makeWASocket, fetchLatestBaileysVersion, rawSocket };
 }
@@ -52,7 +54,7 @@ test('SocketOptions.version reaches makeWASocket and skips discovery', async (t)
   assert.deepEqual(makeWASocket.mock.calls[0]?.arguments[0].version, overrideVersion);
   assert.equal(makeWASocket.mock.calls[0]?.arguments[0].markOnlineOnConnect, false);
   assert.equal(fetchLatestBaileysVersion.mock.callCount(), 0);
-  assert.equal(log.mock.callCount(), 0);
+  assert.deepEqual(log.mock.calls.map((call) => call.arguments), [['socket.agent-family-4']]);
   assert.equal(socket.ev, rawSocket.ev);
 });
 
@@ -85,7 +87,7 @@ test('discovery is shared during concurrent creation and cached across reconnect
   await create(options, dependencies);
   assert.deepEqual(makeWASocket.mock.calls[4]?.arguments[0].version, fetchedVersion);
   assert.equal(fetchLatestBaileysVersion.mock.callCount(), 1);
-  assert.equal(log.mock.callCount(), 0);
+  assert.deepEqual(log.mock.calls.map((call) => call.arguments).filter((a) => a[0] !== 'socket.agent-family-4'), []);
 });
 
 test('a rejected version fetch falls back, logs only a category, and caches the bundled version', async (t) => {
@@ -95,7 +97,8 @@ test('a rejected version fetch falls back, logs only a category, and caches the 
   await create(options, dependencies);
   assert.deepEqual(makeWASocket.mock.calls.map((call) => call.arguments[0].version), [bundledVersion, bundledVersion]);
   assert.equal(fetchLatestBaileysVersion.mock.callCount(), 1);
-  assert.deepEqual(log.mock.calls.map((call) => call.arguments), [['socket.version.fallback']]);
+  assert.deepEqual(log.mock.calls.map((call) => call.arguments),
+    [['socket.version.fallback'], ['socket.agent-family-4'], ['socket.agent-family-4']]);
 });
 
 test('Baileys non-latest fetch results use the bundled fallback and log the failure', async (t) => {
@@ -105,7 +108,8 @@ test('Baileys non-latest fetch results use the bundled fallback and log the fail
   }));
   await create(options, dependencies);
   assert.deepEqual(makeWASocket.mock.calls[0]?.arguments[0].version, bundledVersion);
-  assert.deepEqual(log.mock.calls.map((call) => call.arguments), [['socket.version.fallback']]);
+  assert.deepEqual(log.mock.calls.map((call) => call.arguments),
+    [['socket.version.fallback'], ['socket.agent-family-4']]);
 });
 
 test('a failing lifecycle logger does not stop fallback socket creation', async (t) => {
