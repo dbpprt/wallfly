@@ -1,4 +1,5 @@
 import { dirname } from 'node:path';
+import https from 'node:https';
 import type { BaileysEventMap, GroupMetadata, WAMessage, WAVersion } from '@whiskeysockets/baileys';
 import { privateDirectory, secureAuthFiles } from './files.js';
 import { LidMap, loadAuthMappings, observeAuthMappings } from './identity.js';
@@ -95,7 +96,12 @@ export async function createBaileysSocket(options: SocketOptions,
   const noop = (): void => {};
   const logger = { level: 'silent', child: () => logger,
     trace: noop, debug: noop, info: noop, warn: noop, error: noop };
-  const socket = makeWASocket({ auth: state, logger, version, markOnlineOnConnect: options.markOnlineOnConnect,
+  // Workbench has no IPv6 route to WhatsApp; node's dual-stack connect stalls there.
+  // Default to IPv4 unless WALLFLY_IP_FAMILY says otherwise (env override kept for portability).
+  const family = Number(process.env.WALLFLY_IP_FAMILY ?? 4) === 6 ? 6 : 4;
+  const agent = new https.Agent({ family, keepAlive: true, keepAliveMsecs: 30000 });
+  try { options.log?.(`socket.agent-family-${family}`); } catch { /* Logging must not break reconnect or event handling. */ }
+  const socket = makeWASocket({ auth: state, logger, agent, version, markOnlineOnConnect: options.markOnlineOnConnect,
     syncFullHistory: true,
     shouldIgnoreJid: (jid) => jid === 'status@broadcast',
     generateHighQualityLinkPreview: false });
