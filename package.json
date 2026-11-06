@@ -19,15 +19,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^20.19.43",
+    "@types/node": "^26.6.6",
     "@types/qrcode": "1.5.6",
-    "@types/ws": "8.18.1",
+    "@types/ws": "8.18.2",
     "eslint": "^10.12.0",
-    "typescript": "~5.9.3",
+    "typescript": "~7.0.2",
     "typescript-eslint": "^8.71.2"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "6.7.23",
+    "@whiskeysockets/baileys": "6.7.24",
     "qrcode": "1.5.4"
   },
   "bin": {
