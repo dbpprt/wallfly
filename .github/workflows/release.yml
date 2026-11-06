@@ -16,8 +16,13 @@ jobs:
       matrix:
         node: [20, 22]
     steps:
+<<<<<<< HEAD
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+=======
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
+>>>>>>> f924466b6df5beabed9a5dfad8c7142f4571191f
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -28,7 +33,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run pack:check
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: matrix.node == 22
         with:
           name: release-tarball
@@ -39,10 +44,10 @@ jobs:
     name: Gitleaks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: 'false'
@@ -54,8 +59,13 @@ jobs:
     permissions:
       contents: write
     steps:
+<<<<<<< HEAD
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v8
+=======
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+>>>>>>> 245307bc27b85860e0b7561e04a25788d3861e04
         with:
           name: release-tarball
           path: release-assets
